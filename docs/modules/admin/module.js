@@ -233,9 +233,16 @@ function openResetPasswordModal(targetUser, ctx, refreshRoster) {
       //    Escrow is intentionally encrypted under the recovery code (not
       //    the admin password) so escrow files survive admin password
       //    changes and recoveries without needing a re-key pass.
+      //
+      //    IMPORTANT: the recovery code's PBKDF2 key is derived from the
+      //    NORMALIZED form (no hyphens/spaces, uppercase). Both the Python
+      //    build script and the JS recovery-record helpers normalize
+      //    internally — unlockEscrowRecord is generic, so we have to do
+      //    it explicitly here, otherwise hyphenated input fails to decrypt.
+      const normalizedCode = normalizeRecoveryCode(code);
       let userPat;
       try {
-        userPat = await unlockEscrowRecord(escrow, code);
+        userPat = await unlockEscrowRecord(escrow, normalizedCode);
       } catch (e) {
         errBox.textContent = 'Recovery code is incorrect (or escrow was built under a different code).';
         errBox.hidden = false;
