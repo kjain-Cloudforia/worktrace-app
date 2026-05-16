@@ -305,29 +305,28 @@ async function loadModule(moduleEntry) {
     }
   }
 
-  // shell services object — modules use this to fetch data
+  // shell services object — modules use this to fetch data.
+  //
+  // Per-user-repo model (Phase 5a+): each user's data repo holds exactly
+  // one user's data, stored at `modules/<id>/data.json`. No per-user
+  // subdirectories. fetchUserData / listAllUserData take a `dataRepoOverride`
+  // arg for admin views that iterate across multiple repos — Phase 5d wires
+  // that up. For non-admin users, the single fetchMyData() is all they need.
   const shellApi = {
     currentUser: SHELL_STATE.currentUser,
     allUsers: SHELL_STATE.dataRegistry.users.filter(u => u.active),
-    /** Fetch the current user's JSON for this module. */
+    /** Fetch the current user's data file for this module. */
     async fetchMyData() {
-      const dataPath = def.dataPath || `modules/${def.id}/users`;
-      return ghFetchJSON(`${dataPath}/${SHELL_STATE.currentUser.user_id}.json`);
+      const dataPath = def.dataPath || `modules/${def.id}/data.json`;
+      return ghFetchJSON(dataPath);
     },
-    /** Fetch a specific user's JSON for this module. */
-    async fetchUserData(userId) {
-      const dataPath = def.dataPath || `modules/${def.id}/users`;
-      return ghFetchJSON(`${dataPath}/${userId}.json`);
-    },
-    /** List all user JSONs for this module (for team rollups). */
-    async listAllUserData() {
-      const dataPath = def.dataPath || `modules/${def.id}/users`;
-      const files = await ghListDir(dataPath);
-      return Promise.all(
-        files
-          .filter(f => f.name.endsWith('.json'))
-          .map(f => ghFetchJSON(`${dataPath}/${f.name}`))
-      );
+    /** Fetch a specific user's data file for this module.
+     * In Phase 5a, only one user exists in a given data repo, so this is
+     * functionally equivalent to fetchMyData(). Phase 5d's admin view will
+     * extend this with a `dataRepoOverride` to fetch across user repos. */
+    async fetchUserData(_userId) {
+      const dataPath = def.dataPath || `modules/${def.id}/data.json`;
+      return ghFetchJSON(dataPath);
     },
   };
 

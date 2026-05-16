@@ -1,0 +1,89 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/kjain-Cloudforia/worktrace-data/schema/timesheet/v1.json",
+  "title": "WorkTrace Timesheet module — v1",
+  "description": "Per-user structured timesheet entries. One file per user at modules/timesheet/users/<user_id>.json. Each entry covers one (work_date, project) and includes both a headline summary (for tile views) and the full bullet text (for detail views). The private repo IS the trust boundary — full content is OK to push because only invited team collaborators have read access. No credentials (PATs, session IDs) are ever included.",
+  "type": "object",
+  "required": ["schema_version", "user_id", "entries"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "user_id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$"
+    },
+    "display_name": { "type": "string" },
+    "timezone": { "type": "string" },
+    "work_shift": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "start": { "type": "string", "pattern": "^[0-9]{2}:[0-9]{2}$" },
+        "end":   { "type": "string", "pattern": "^[0-9]{2}:[0-9]{2}$" }
+      }
+    },
+    "last_synced_at": { "type": "string", "format": "date-time" },
+    "source_hash": {
+      "type": "string",
+      "description": "sha256 of the timesheet.md slice that produced this JSON. Lets dpsync detect no-op pushes."
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["work_date", "project", "headline", "counts"],
+        "additionalProperties": false,
+        "properties": {
+          "work_date": {
+            "type": "string",
+            "format": "date",
+            "description": "The IST work day (Mon 2026-05-11 = the shift starting 14:00 IST on that date)."
+          },
+          "project": {
+            "type": "object",
+            "required": ["company_name"],
+            "additionalProperties": false,
+            "properties": {
+              "company_name": {
+                "type": "string",
+                "description": "From Salesforce Organization.Name. E.g. 'GenServe, LLC'."
+              },
+              "friendly_name": {
+                "type": "string",
+                "description": "Short alias from config.json project_detection.company_to_project. E.g. 'Genserve'."
+              }
+            }
+          },
+          "headline": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500,
+            "description": "1-2 sentence summary for the dashboard tile view. Auto-derived from bullets (Phase 1: first-sentence-join; Phase 2: LLM-summarized)."
+          },
+          "bullets": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Full bullet text for the day, in order. Used by the dashboard detail view. Each bullet may span multiple lines (separated by literal newlines in the string)."
+          },
+          "counts": {
+            "type": "object",
+            "description": "Open-ended counts dict. Common keys: bullets, deploys, creates, modifications, investigations, users_provisioned.",
+            "additionalProperties": {
+              "type": "integer",
+              "minimum": 0
+            }
+          },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Free-form labels for filtering on the dashboard. E.g. 'code', 'admin-fixes', 'onboarding'."
+          },
+          "entry_hash": {
+            "type": "string",
+            "description": "sha256 over (work_date, project.company_name, headline) — idempotency key per entry."
+          }
+        }
+      }
+    }
+  }
+}

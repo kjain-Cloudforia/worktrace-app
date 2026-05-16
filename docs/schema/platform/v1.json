@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/kjain-Cloudforia/worktrace-data/schema/platform/v1.json",
+  "title": "WorkTrace platform user registry — v1",
+  "description": "Source of truth for who's on the platform. One row per teammate. Maintained by `dpsetup` and admin edits. Each user can write their own row; only admins may delete others'.",
+  "type": "object",
+  "required": ["schema_version", "users"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "last_updated_at": { "type": "string", "format": "date-time" },
+    "users": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["user_id", "display_name", "github_login", "active", "joined_at"],
+        "additionalProperties": false,
+        "properties": {
+          "user_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9-]*$",
+            "description": "Slug identifier; used in file paths. Stable forever."
+          },
+          "display_name": {
+            "type": "string",
+            "description": "Human-readable name shown on dashboard."
+          },
+          "github_login": {
+            "type": "string",
+            "description": "GitHub username; used for CODEOWNERS enforcement in Phase 4."
+          },
+          "timezone": {
+            "type": "string",
+            "description": "IANA timezone, e.g. Asia/Kolkata, America/New_York."
+          },
+          "active": {
+            "type": "boolean",
+            "description": "False = offboarded; their historical data may stay visible with an inactive badge."
+          },
+          "joined_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "modules_enabled": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Module IDs this user has opted into. Empty array = registered but no data being pushed."
+          }
+        }
+      }
+    }
+  }
+}
