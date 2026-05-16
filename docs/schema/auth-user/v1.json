@@ -1,0 +1,46 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://kjain-Cloudforia.github.io/worktrace-app/schema/auth-user/v1.json",
+  "title": "WorkTrace auth-user record (v1)",
+  "description": "One file per user in worktrace-auth/users/<username>.json. Encrypted PAT (with AES-GCM under a PBKDF2-derived key from the user's password) plus public metadata. The file is world-readable; the secret stays protected by the password.",
+  "type": "object",
+  "required": [
+    "schema_version", "username", "display_name", "is_admin",
+    "kdf", "iterations", "salt", "iv", "ciphertext",
+    "created_at", "updated_at"
+  ],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "username": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "description": "Lowercase slug, unique across worktrace-auth/users/."
+    },
+    "display_name": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "data_repo": {
+      "type": ["string", "null"],
+      "description": "GitHub `owner/repo` of this user's data repo. NULL for admin-only records that don't have personal data."
+    },
+    "is_admin": { "type": "boolean" },
+    "managed_repos": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Admin only — explicit list of repos this admin can administer (e.g. for listing all users). Stored for UI convenience; the actual auth comes from the encrypted PAT's GitHub permissions."
+    },
+    "kdf": {
+      "const": "PBKDF2-HMAC-SHA256",
+      "description": "Hard-coded for v1. Future schemas will widen."
+    },
+    "iterations": {
+      "type": "integer",
+      "minimum": 100000,
+      "description": "PBKDF2 iteration count. 600_000 is the OWASP 2023 minimum for SHA-256."
+    },
+    "salt":       { "type": "string", "description": "Base64-encoded 16-byte salt." },
+    "iv":         { "type": "string", "description": "Base64-encoded 12-byte AES-GCM IV." },
+    "ciphertext": { "type": "string", "description": "Base64-encoded AES-GCM ciphertext (includes the 16-byte MAC tag)." },
+    "created_at": { "type": "string", "format": "date-time" },
+    "updated_at": { "type": "string", "format": "date-time" }
+  }
+}
