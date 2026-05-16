@@ -590,6 +590,45 @@ async function commitToAuthRepo(path, contentString, commitMessage) {
   return res.json();
 }
 
+/**
+ * Delete a file from worktrace-auth via the GitHub Contents API.
+ *
+ * Caller MUST hold a PAT in SHELL_STATE.pat with Contents:Read+Write.
+ * Returns silently on 404 — deleting a non-existent file is treated
+ * as success (idempotent), so callers don't have to track which
+ * artifacts a given user has.
+ *
+ * Used by the admin module's revoke-user flow to remove users/<u>.json
+ * + escrow/<u>.json in one pass.
+ */
+async function deleteFromAuthRepo(path, commitMessage) {
+  const url = `${GITHUB_API}/repos/${AUTH_REPO}/contents/${path}`;
+  // Need the current SHA to delete — same optimistic-concurrency
+  // pattern as commitToAuthRepo.
+  const probe = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${SHELL_STATE.pat}` },
+  });
+  if (probe.status === 404) return { deleted: false, reason: 'not_found' };
+  if (!probe.ok) {
+    throw new Error(`Failed to read file for delete: HTTP ${probe.status}`);
+  }
+  const sha = (await probe.json()).sha;
+
+  const res = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'Authorization': `Bearer ${SHELL_STATE.pat}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ message: commitMessage, sha, branch: 'main' }),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Delete failed: HTTP ${res.status} — ${txt.slice(0, 200)}`);
+  }
+  return { deleted: true };
+}
+
 // ============================================================
 // Change-password flow
 // ============================================================
@@ -823,6 +862,13 @@ async function loadModule(moduleEntry) {
      */
     async commitAuth(path, contentString, commitMessage) {
       return commitToAuthRepo(path, contentString, commitMessage);
+    },
+    /**
+     * Delete a path from worktrace-auth (idempotent — 404 silently OK).
+     * Used by the admin module's revoke-user flow.
+     */
+    async deleteAuth(path, commitMessage) {
+      return deleteFromAuthRepo(path, commitMessage);
     },
     /** Modal helpers — modules build their own DOM, shell handles overlay. */
     openModal(contents) { openModal(contents); },

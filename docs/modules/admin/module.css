@@ -191,6 +191,30 @@
   background: var(--wt-tile-border);
   color: var(--wt-fg);
 }
+/* Danger variant — destructive actions (Revoke). Subdued until hover
+   so it doesn't dominate the card; turns red on hover to be unmissable. */
+.wt-admin-card__btn--danger {
+  border-color: var(--wt-tile-border);
+  color: var(--wt-fg-muted);
+}
+.wt-admin-card__btn--danger:hover {
+  background: var(--wt-danger);
+  border-color: var(--wt-danger);
+  color: #fff;
+}
+
+/* Roster header row — count on the left, Add-user button on the right. */
+.wt-admin-detail__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+.wt-admin-detail__header .wt-admin-detail__lead {
+  margin: 0;
+}
 
 /* ---- Drill-in user timesheet header ------------------------- */
 .wt-admin-detail__userhead {

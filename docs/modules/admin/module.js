@@ -35,9 +35,12 @@
 import timesheetModule from '../timesheet/module.js';
 import {
   unlockEscrowRecord,
+  unlockRecoveryRecord,
   encryptSecret,
   checkPasswordStrength,
   normalizeRecoveryCode,
+  buildUserRecord,
+  buildEscrowRecord,
 } from '../../auth/auth.js';
 
 // ---- local helpers (kept private to this module) -----------------------
@@ -149,6 +152,410 @@ function userInitials(user) {
 function fmtTs(iso) {
   if (!iso) return '—';
   return iso.slice(0, 16).replace('T', ' ') + ' UTC';
+}
+
+// ---- Create-user flow (admin-triggered) --------------------------------
+
+/**
+ * Validate that the named auth file does NOT already exist. Returns
+ * true if free (404), false if a record is present, throws on other
+ * errors. We use the Contents API for consistency with the rest of
+ * the module — raw CDN can't distinguish 404 from cache miss reliably.
+ */
+async function isUsernameFree(username) {
+  const url = `${AUTH_USERS_API}/${encodeURIComponent(username)}.json`;
+  const res = await fetch(url, {
+    headers: { 'Accept': 'application/vnd.github.v3.raw' },
+    cache: 'no-store',
+  });
+  if (res.status === 404) return true;
+  if (res.status === 200) return false;
+  throw new Error(`Couldn't check username availability (HTTP ${res.status})`);
+}
+
+/**
+ * Open the "Add team member" modal.
+ *
+ * Pre-flight (admin's responsibility, NOT this flow):
+ *   1. Create the data repo on GitHub (org/worktrace-data-<username>).
+ *   2. Generate a fine-grained PAT for the new user with Contents:RW on
+ *      that repo. Hand it to this flow.
+ *
+ * What this flow does:
+ *   - Probes the data repo with the supplied PAT to confirm it works.
+ *   - Confirms the recovery code unlocks admin.recovery.json (so we
+ *     don't write an escrow file under a typo'd code that wouldn't
+ *     match any future reset attempt).
+ *   - Encrypts the user's PAT under the initial password → users/<u>.json
+ *   - Encrypts the user's PAT under the recovery code → escrow/<u>.json
+ *   - Commits both files.
+ *   - Shows the initial password to admin with copy-to-clipboard so they
+ *     can hand it off out-of-band.
+ *
+ * Success means BOTH files committed. If the second commit fails after
+ * the first succeeds, we leave the partial state for manual cleanup —
+ * a half-created user is recoverable (admin can re-run Add user; the
+ * isUsernameFree check will tell them, and they can manually delete the
+ * orphan via GitHub UI).
+ */
+function openCreateUserModal(ctx, refreshRoster) {
+  const usernameInput = el('input', { type: 'text', autocomplete: 'off',
+                                       placeholder: 'kashish-2' });
+  const displayInput  = el('input', { type: 'text', autocomplete: 'off',
+                                       placeholder: 'Kashish Jain' });
+  const repoInput     = el('input', { type: 'text', autocomplete: 'off',
+                                       placeholder: 'kjain-Cloudforia/worktrace-data-<username>' });
+  const patInput      = el('input', { type: 'password', autocomplete: 'off' });
+  const pwInput       = el('input', { type: 'password', autocomplete: 'new-password' });
+  const codeInput     = el('input', { type: 'text', autocomplete: 'off',
+                                       placeholder: 'XXXX-XXXX-XXXX-XXXX-XXXX-XXXX' });
+
+  const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
+  const workBox = el('p', { class: 'wt-modal__working', hidden: true });
+  const submit  = el('button', { class: 'wt-modal__submit' }, 'Create user');
+  const cancel  = el('button', { class: 'wt-modal__cancel' }, 'Cancel');
+
+  // Auto-fill the data_repo placeholder from the username as admin types,
+  // so the common case (org/worktrace-data-<u>) doesn't require typing.
+  // We only auto-fill if the field is still empty or matches our last
+  // suggestion — never overwrite a manual edit.
+  let lastSuggestion = '';
+  usernameInput.addEventListener('input', () => {
+    const u = usernameInput.value.trim().toLowerCase();
+    const suggestion = u ? `kjain-Cloudforia/worktrace-data-${u}` : '';
+    if (!repoInput.value || repoInput.value === lastSuggestion) {
+      repoInput.value = suggestion;
+      lastSuggestion = suggestion;
+    }
+  });
+
+  async function attempt() {
+    errBox.hidden = true;
+    const username = (usernameInput.value || '').trim().toLowerCase();
+    const display  = (displayInput.value  || '').trim();
+    const dataRepo = (repoInput.value     || '').trim();
+    const userPat  = patInput.value;
+    const initPw   = pwInput.value;
+    const code     = codeInput.value;
+
+    // ---- Input-shape validation ----------------------------------
+    if (!username || !display || !dataRepo || !userPat || !initPw || !code) {
+      errBox.textContent = 'Every field is required.';
+      errBox.hidden = false;
+      return;
+    }
+    if (!/^[a-z][a-z0-9-]*$/.test(username)) {
+      errBox.textContent = 'Username must be a lowercase slug (letters, digits, hyphens; starts with a letter).';
+      errBox.hidden = false;
+      return;
+    }
+    if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(dataRepo)) {
+      errBox.textContent = 'Data repo must be in owner/repo form (e.g. kjain-Cloudforia/worktrace-data-bob).';
+      errBox.hidden = false;
+      return;
+    }
+    let normalizedCode;
+    try {
+      normalizedCode = normalizeRecoveryCode(code);
+    } catch {
+      errBox.textContent = 'Recovery code must be 24 Crockford characters (hyphens / spaces / lowercase are OK).';
+      errBox.hidden = false;
+      return;
+    }
+    const policy = checkPasswordStrength(initPw);
+    if (!policy.ok) {
+      errBox.textContent = 'Initial password does not meet policy: ' + policy.reasons.join(' ');
+      errBox.hidden = false;
+      return;
+    }
+
+    submit.disabled = true;
+    submit.textContent = 'Creating…';
+    workBox.hidden = false;
+    workBox.textContent = 'Checking username…';
+
+    try {
+      // ---- Server-side validation -------------------------------
+      // 1) Username uniqueness — no orphan overwrite.
+      if (!await isUsernameFree(username)) {
+        errBox.textContent = `A user @${username} already exists.`;
+        errBox.hidden = false;
+        return;
+      }
+
+      // 2) Probe the data_repo with the supplied PAT. Confirms the
+      //    repo exists AND the PAT has access. Catches typos / wrong
+      //    scope before we commit anything.
+      workBox.textContent = "Probing data repo with the user's PAT…";
+      const probe = await fetch(`https://api.github.com/repos/${dataRepo}`, {
+        headers: { 'Authorization': `Bearer ${userPat}` },
+      });
+      if (probe.status === 404) {
+        errBox.textContent = `Data repo ${dataRepo} not found. Create it on GitHub first.`;
+        errBox.hidden = false;
+        return;
+      }
+      if (probe.status === 401 || probe.status === 403) {
+        errBox.textContent = `The PAT does not have access to ${dataRepo}. Re-issue it with Contents:Read+Write on that repo.`;
+        errBox.hidden = false;
+        return;
+      }
+      if (!probe.ok) {
+        errBox.textContent = `Repo probe failed: HTTP ${probe.status}`;
+        errBox.hidden = false;
+        return;
+      }
+
+      // 3) Confirm the recovery code actually unlocks admin.recovery.json
+      //    — otherwise we'd write an escrow under a typo'd code that no
+      //    later reset attempt could decrypt. Cheap upfront guard.
+      workBox.textContent = 'Verifying recovery code…';
+      const recProbe = await fetch(
+        'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents/admin.recovery.json',
+        { headers: { 'Accept': 'application/vnd.github.v3.raw' }, cache: 'no-store' });
+      if (!recProbe.ok) {
+        errBox.textContent = 'Could not fetch admin.recovery.json to verify code.';
+        errBox.hidden = false;
+        return;
+      }
+      try {
+        // unlockRecoveryRecord normalises the code internally — pass raw.
+        await unlockRecoveryRecord(await recProbe.json(), code);
+      } catch {
+        errBox.textContent = 'Recovery code is incorrect — refusing to write an escrow nobody can unlock.';
+        errBox.hidden = false;
+        return;
+      }
+
+      // ---- Build records --------------------------------------------
+      workBox.textContent = 'Encrypting PAT under initial password (≈2s)…';
+      const userRecord = await buildUserRecord({
+        username, displayName: display, dataRepo,
+        pat: userPat, password: initPw, isAdmin: false,
+      });
+
+      workBox.textContent = 'Encrypting PAT under recovery code (≈2s)…';
+      const escrowRecord = await buildEscrowRecord({
+        username, pat: userPat, adminPassword: normalizedCode,
+      });
+      // Set encrypted_by to recovery_code so the audit trail in the file
+      // reflects the actual key, matching the Python build script.
+      escrowRecord.encrypted_by = 'recovery_code';
+
+      // ---- Commit -------------------------------------------------
+      workBox.textContent = `Committing users/${username}.json…`;
+      await ctx.commitAuth(
+        `users/${username}.json`,
+        JSON.stringify(userRecord, null, 2) + '\n',
+        `Provision new user ${username}`,
+      );
+      workBox.textContent = `Committing escrow/${username}.json…`;
+      await ctx.commitAuth(
+        `escrow/${username}.json`,
+        JSON.stringify(escrowRecord, null, 2) + '\n',
+        `Provision escrow for ${username}`,
+      );
+
+      // ---- Success state ------------------------------------------
+      renderCreateSuccess({ username, display, initialPassword: initPw }, refreshRoster);
+    } catch (err) {
+      errBox.textContent = `Create failed: ${err.message || err}`;
+      errBox.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Create user';
+      workBox.hidden = true;
+    }
+  }
+
+  submit.addEventListener('click', attempt);
+  cancel.addEventListener('click', () => ctx.closeModal());
+
+  ctx.openModal([
+    el('h2', {}, 'Add team member'),
+    el('p', { class: 'wt-modal__lead' },
+      'Create the data repo + fine-grained PAT on GitHub first, then ' +
+      'fill in below. The user receives the initial password out-of-band.'),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Username (slug)'),
+      usernameInput,
+      el('p', { class: 'wt-modal__hint' },
+        'Lowercase letters, digits, hyphens. Used as the sign-in name and in file paths.')),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Display name'),
+      displayInput),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Data repo'),
+      repoInput,
+      el('p', { class: 'wt-modal__hint' },
+        'owner/repo form. Must already exist on GitHub.')),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, "User's GitHub PAT (fine-grained)"),
+      patInput,
+      el('p', { class: 'wt-modal__hint' },
+        'Contents:Read+Write on the data repo. Never sent anywhere — we encrypt it locally.')),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Initial password (user will rotate it)'),
+      pwInput,
+      el('p', { class: 'wt-modal__hint' },
+        'Min 12 chars, mixed case, one digit. Pick something memorable to dictate.')),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Recovery code'),
+      codeInput,
+      el('p', { class: 'wt-modal__hint' },
+        'The 24-char admin recovery code. Used to build the escrow file.')),
+
+    errBox,
+    workBox,
+    el('div', { class: 'wt-modal__actions' }, cancel, submit),
+  ]);
+}
+
+/**
+ * Success state for the create-user flow. Shows the initial password
+ * with a copy button so admin can hand it off out-of-band.
+ */
+function renderCreateSuccess({ username, display, initialPassword }, refreshRoster) {
+  const panel = document.querySelector('#wt-modal .wt-modal__panel');
+  panel.innerHTML = '';
+
+  const pwField = el('input', {
+    type: 'text', readonly: true, value: initialPassword,
+    class: 'wt-login__input',
+    style: 'font-family: var(--wt-font-mono); user-select: all;',
+  });
+  const copyBtn = el('button', { class: 'wt-modal__cancel' }, 'Copy');
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(initialPassword);
+      copyBtn.textContent = 'Copied ✓';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+    } catch {
+      pwField.select();
+      document.execCommand('copy');
+      copyBtn.textContent = 'Copied ✓';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+    }
+  });
+
+  const doneBtn = el('button', { class: 'wt-modal__submit' }, 'Done');
+  doneBtn.addEventListener('click', () => {
+    document.querySelector('#wt-modal').setAttribute('hidden', '');
+    if (typeof refreshRoster === 'function') refreshRoster();
+  });
+
+  panel.append(
+    el('h2', {}, 'User created ✓'),
+    el('p', { class: 'wt-modal__success' },
+      `${display} (@${username}) provisioned. Their auth + escrow files are in worktrace-auth.`),
+    el('p', { class: 'wt-modal__lead' },
+      'Send the initial password out-of-band (Slack DM, in person). ' +
+      'Tell them to sign in and rotate it via Change password.'),
+    el('div', { style: 'display: flex; gap: 8px; align-items: stretch;' },
+      pwField, copyBtn),
+    el('p', { class: 'wt-modal__hint' },
+      'This is the only time the password is shown. Closing this loses it.'),
+    el('div', { class: 'wt-modal__actions' }, doneBtn),
+  );
+}
+
+// ---- Revoke-user flow (admin-triggered) --------------------------------
+
+/**
+ * Open the "Revoke @<user>" confirmation modal.
+ *
+ * Deletes users/<u>.json + escrow/<u>.json from worktrace-auth, which
+ * prevents the user from signing in. Does NOT touch the user's data
+ * repo content or the PAT itself — admin can:
+ *   - delete the data repo on GitHub if they want it gone
+ *   - revoke the PAT on GitHub Developer Settings if they want it dead
+ * (Same model as the offboarding plan in PROJECT_NOTES.md.)
+ */
+function openRevokeUserModal(targetUser, ctx, refreshRoster) {
+  const confirmInput = el('input', {
+    type: 'text', autocomplete: 'off',
+    placeholder: `type "${targetUser.username}" to confirm`,
+  });
+  const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
+  const workBox = el('p', { class: 'wt-modal__working', hidden: true });
+  const submit  = el('button', { class: 'wt-modal__submit',
+                                  style: 'background: var(--wt-danger);' },
+                     'Revoke access');
+  const cancel  = el('button', { class: 'wt-modal__cancel' }, 'Cancel');
+
+  async function attempt() {
+    errBox.hidden = true;
+    if (confirmInput.value.trim() !== targetUser.username) {
+      errBox.textContent = `Type "${targetUser.username}" exactly to confirm.`;
+      errBox.hidden = false;
+      return;
+    }
+
+    submit.disabled = true;
+    submit.textContent = 'Revoking…';
+    workBox.hidden = false;
+    workBox.textContent = `Deleting users/${targetUser.username}.json…`;
+
+    try {
+      await ctx.deleteAuth(
+        `users/${targetUser.username}.json`,
+        `Revoke access for ${targetUser.username}`,
+      );
+      workBox.textContent = `Deleting escrow/${targetUser.username}.json…`;
+      await ctx.deleteAuth(
+        `escrow/${targetUser.username}.json`,
+        `Remove escrow for ${targetUser.username}`,
+      );
+
+      // Success — replace modal with a brief done-state.
+      const panel = document.querySelector('#wt-modal .wt-modal__panel');
+      panel.innerHTML = '';
+      const doneBtn = el('button', { class: 'wt-modal__submit' }, 'Done');
+      doneBtn.addEventListener('click', () => {
+        document.querySelector('#wt-modal').setAttribute('hidden', '');
+        if (typeof refreshRoster === 'function') refreshRoster();
+      });
+      panel.append(
+        el('h2', {}, 'Access revoked'),
+        el('p', { class: 'wt-modal__success' },
+          `@${targetUser.username} can no longer sign in.`),
+        el('p', { class: 'wt-modal__lead' },
+          'Data repo and PAT are unchanged. To fully decommission: ' +
+          'delete the data repo on GitHub, revoke the PAT in Developer Settings.'),
+        el('div', { class: 'wt-modal__actions' }, doneBtn),
+      );
+    } catch (err) {
+      errBox.textContent = `Revoke failed: ${err.message || err}`;
+      errBox.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Revoke access';
+      workBox.hidden = true;
+    }
+  }
+
+  submit.addEventListener('click', attempt);
+  cancel.addEventListener('click', () => ctx.closeModal());
+
+  ctx.openModal([
+    el('h2', { style: 'color: var(--wt-danger);' },
+       `Revoke access — @${targetUser.username}`),
+    el('p', { class: 'wt-modal__lead' },
+      `This deletes ${targetUser.display_name}'s auth + escrow files from worktrace-auth. ` +
+      'They will no longer be able to sign in. Their data repo and PAT are NOT touched.'),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, `Type the username to confirm`),
+      confirmInput),
+    errBox,
+    workBox,
+    el('div', { class: 'wt-modal__actions' }, cancel, submit),
+  ]);
 }
 
 // ---- Reset-password flow (admin-triggered) ------------------------------
@@ -501,9 +908,18 @@ export default {
 
       container.innerHTML = '';
 
-      container.appendChild(el('p', { class: 'wt-admin-detail__lead' },
-        `${users.length} team member${users.length === 1 ? '' : 's'}, ` +
-        `${users.filter(u => u.is_admin).length} admin${users.filter(u => u.is_admin).length === 1 ? '' : 's'}.`
+      // Header row: count + Add User button. Keeping it inline rather
+      // than in a separate panel so the roster stays a single scrolling
+      // section without extra chrome.
+      container.appendChild(el('div', { class: 'wt-admin-detail__header' },
+        el('p', { class: 'wt-admin-detail__lead' },
+          `${users.length} team member${users.length === 1 ? '' : 's'}, ` +
+          `${users.filter(u => u.is_admin).length} admin${users.filter(u => u.is_admin).length === 1 ? '' : 's'}.`
+        ),
+        el('button', {
+          class: 'wt-admin-card__btn',
+          onclick: () => openCreateUserModal(ctx, render),
+        }, '+ Add team member'),
       ));
 
       const grid = el('div', { class: 'wt-admin-grid' });
@@ -578,12 +994,15 @@ export default {
           'no sync yet');
       }
 
-      // The "Reset password" button is offered for every non-admin
-      // user. Admins go through the recovery-code flow on the login
-      // screen instead — admin can't reset their own password from
-      // inside an authenticated session because doing so would imply
-      // they remember it (and could use the Change Password flow).
-      const canReset = !user.is_admin;
+      // Per-user actions. Admins are exempt from Reset/Revoke because:
+      //   - Reset: admin uses the recovery code flow instead (only one
+      //     admin record per system; resetting it via the same modal
+      //     would be confusing).
+      //   - Revoke: deleting admin would lock everyone out of
+      //     worktrace-auth (no PAT with write scope left). Future
+      //     multi-admin support could relax this.
+      const canReset  = !user.is_admin;
+      const canRevoke = !user.is_admin;
 
       return el('div', { class: 'wt-admin-card' },
         el('div', { class: 'wt-admin-card__avatar' }, initials),
@@ -612,7 +1031,13 @@ export default {
                 class: 'wt-admin-card__btn wt-admin-card__btn--ghost',
                 onclick: () => openResetPasswordModal(user, ctx, render),
               }, 'Reset password')
-            : null
+            : null,
+          canRevoke
+            ? el('button', {
+                class: 'wt-admin-card__btn wt-admin-card__btn--danger',
+                onclick: () => openRevokeUserModal(user, ctx, render),
+              }, 'Revoke')
+            : null,
         )
       );
     };
