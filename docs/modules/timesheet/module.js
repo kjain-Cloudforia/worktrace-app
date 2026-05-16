@@ -76,6 +76,11 @@ export default {
   description: 'Daily work log by project',
   schemaVersion: 1,
   stylesheet: 'module.css',
+  // Admins don't have their own personal timesheet (data_repo is null
+  // on admin auth records). Admins view team members' timesheets via
+  // the Admin module's drill-in instead, which imports this module
+  // directly and supplies a custom ctx.
+  hideForAdmin: true,
 
   async init(_shell) {
     // Nothing to preload at init — data is fetched lazily per view.

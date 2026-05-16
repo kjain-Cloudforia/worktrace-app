@@ -77,6 +77,12 @@ async function fetchAuthFile(filename) {
   return publicFields;
 }
 
+// Path within each user's data_repo where the Timesheet module's data
+// lives. Hard-coded here because admin renders Timesheet data on behalf
+// of users — it needs the *Timesheet* module's data path, not its own
+// (admin doesn't have a data file of its own).
+const TIMESHEET_DATA_PATH = 'modules/timesheet/data.json';
+
 /**
  * Fetch a user's timesheet data through admin's PAT. Returns null on
  * 404 (user hasn't synced yet), and re-throws on auth errors so the
@@ -85,7 +91,7 @@ async function fetchAuthFile(filename) {
 async function fetchUserTimesheet(ctx, user) {
   if (!user.data_repo) return null;
   try {
-    return await ctx.fetchUserDataFromRepo(user.data_repo);
+    return await ctx.ghFetch(user.data_repo, TIMESHEET_DATA_PATH);
   } catch (err) {
     if (err.code === 'NOT_FOUND') return null;
     throw err;
@@ -257,7 +263,8 @@ export default {
       }
 
       // Shim the timesheet module's ctx so fetchMyData points at THIS
-      // user's repo, using admin's PAT (which has cross-user read).
+      // user's repo + the Timesheet module's data path (not admin's),
+      // using admin's PAT (which has cross-user read).
       const shimmedCtx = {
         ...ctx,
         currentUser: {
@@ -265,7 +272,7 @@ export default {
           // Make sure renderDetail's summary shows the user being viewed,
           // not the admin doing the viewing.
         },
-        fetchMyData: () => ctx.fetchUserDataFromRepo(user.data_repo),
+        fetchMyData: () => ctx.ghFetch(user.data_repo, TIMESHEET_DATA_PATH),
       };
 
       const body = el('div');

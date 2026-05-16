@@ -327,10 +327,14 @@ async function loadModule(moduleEntry) {
     throw new Error(`Module ${moduleEntry.id}: default export missing or id mismatch`);
   }
 
-  // Admin gating — if a module declares requiresAdmin, hide it for non-admins.
-  if (def.requiresAdmin && !SHELL_STATE.currentUser?.is_admin) {
-    return null;
-  }
+  // Admin gating:
+  //  - `requiresAdmin: true`  → only admins see the tile
+  //  - `hideForAdmin: true`   → only non-admins see the tile
+  //    (modules with no data_repo for admin, e.g. Timesheet — admins
+  //     access user timesheets via the Admin module's drill-in instead)
+  const isAdmin = !!SHELL_STATE.currentUser?.is_admin;
+  if (def.requiresAdmin && !isAdmin) return null;
+  if (def.hideForAdmin && isAdmin) return null;
 
   // Lazy-load the module's stylesheet (if declared)
   if (def.stylesheet) {
