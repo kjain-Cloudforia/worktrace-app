@@ -299,6 +299,144 @@ export async function rekeyUserRecord(record, oldPassword, newPassword) {
   };
 }
 
+// ---- Escrow records (admin-resettable user password) ------------------
+
+/**
+ * Build an escrow record: the user's PAT, encrypted under the *admin's*
+ * password. Lives at `worktrace-auth/escrow/<username>.json` so admin can
+ * reset a user's password without rotating the PAT or contacting the user.
+ *
+ * Threat model note: admin's password is now a master key for every
+ * escrowed user's PAT. This is not new blast radius — admin's own PAT
+ * already has write access to every user's data repo — but it does mean
+ * admin's password should be at least as strong as any user's.
+ */
+export async function buildEscrowRecord({ username, pat, adminPassword }) {
+  if (!/^[a-z][a-z0-9-]*$/.test(username || '')) {
+    throw new Error('username must be a lowercase slug.');
+  }
+  const bundle = await encryptSecret(pat, adminPassword);
+  const now = new Date().toISOString();
+  return {
+    schema_version: SCHEMA_VERSION,
+    kind: 'escrow',
+    username,
+    encrypted_by: 'admin',
+    ...bundle,
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+/** Decrypt an escrow record with admin's password → user's PAT. */
+export async function unlockEscrowRecord(record, adminPassword) {
+  if (record?.kind !== 'escrow') {
+    throw new Error('Not an escrow record.');
+  }
+  return decryptSecret(record, adminPassword);
+}
+
+// ---- Recovery records (admin-self-recovery via code) ------------------
+
+/**
+ * 32-symbol Crockford base32 alphabet — chosen to be unambiguous when
+ * read aloud or transcribed by hand. Drops I, L, O, U (visually confusable
+ * with 1, 1, 0, V). 24 symbols × log2(32) = 120 bits of entropy, which
+ * is plenty against PBKDF2-600k offline guessing.
+ */
+const CROCKFORD = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+
+/** Map common look-alikes on input so users can paste/type loosely. */
+const CROCKFORD_FIXUP = { I: '1', L: '1', O: '0', U: 'V' };
+
+/**
+ * Generate a fresh recovery code formatted as `XXXX-XXXX-XXXX-XXXX-XXXX-XXXX`.
+ * Hyphens are decorative — `normalizeRecoveryCode()` strips them on input.
+ */
+export function generateRecoveryCode() {
+  const bytes = randomBytes(24);
+  let out = '';
+  for (let i = 0; i < 24; i++) {
+    if (i > 0 && i % 4 === 0) out += '-';
+    out += CROCKFORD[bytes[i] & 31];
+  }
+  return out;
+}
+
+/**
+ * Canonicalise a user-typed recovery code so minor visual mistakes
+ * (lowercase, hyphens, I-vs-1) don't cause spurious "wrong code" errors.
+ * Returns the 24-char alphabet-only string, or throws if it's clearly
+ * not a recovery code.
+ */
+export function normalizeRecoveryCode(input) {
+  if (typeof input !== 'string') throw new Error('Recovery code must be a string.');
+  const raw = input.toUpperCase().replace(/[\s-]/g, '');
+  let fixed = '';
+  for (const ch of raw) {
+    fixed += CROCKFORD_FIXUP[ch] ?? ch;
+  }
+  if (fixed.length !== 24 || !/^[0-9A-HJKMNP-TV-Z]{24}$/.test(fixed)) {
+    throw new Error('Recovery code must be 24 Crockford-base32 characters.');
+  }
+  return fixed;
+}
+
+/**
+ * Build a recovery record: a user's PAT encrypted under a one-time
+ * recovery code. Currently used for admin; the same primitive could
+ * back any user's "I lost everything" path later.
+ *
+ * The recovery code itself is NOT stored — only the caller (the human
+ * who will write it down) sees it. We use the code directly as the
+ * PBKDF2 password, so the same 600k-iteration cost applies.
+ */
+export async function buildRecoveryRecord({ username, pat, recoveryCode }) {
+  if (!/^[a-z][a-z0-9-]*$/.test(username || '')) {
+    throw new Error('username must be a lowercase slug.');
+  }
+  const code = normalizeRecoveryCode(recoveryCode);
+  // checkPasswordStrength is tuned for human-typed passwords; the recovery
+  // code is high-entropy by construction, so skip the policy check and
+  // call the lower-level helper directly.
+  const salt = randomBytes(KDF_SALT_LEN);
+  const iv   = randomBytes(AES_IV_LEN);
+  const key  = await deriveKey(code, salt, KDF_ITERATIONS, 'encrypt');
+  const ct   = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, key, enc.encode(pat));
+
+  const now = new Date().toISOString();
+  return {
+    schema_version: SCHEMA_VERSION,
+    kind: 'recovery',
+    username,
+    kdf:        KDF_NAME,
+    iterations: KDF_ITERATIONS,
+    salt:       bytesToBase64(salt),
+    iv:         bytesToBase64(iv),
+    ciphertext: bytesToBase64(new Uint8Array(ct)),
+    created_at: now,
+    updated_at: now,
+  };
+}
+
+/** Decrypt a recovery record with the typed code → original PAT. */
+export async function unlockRecoveryRecord(record, recoveryCode) {
+  if (record?.kind !== 'recovery') {
+    throw new Error('Not a recovery record.');
+  }
+  const code = normalizeRecoveryCode(recoveryCode);
+  // Bypass the strength check (same reasoning as buildRecoveryRecord).
+  if (record.kdf !== KDF_NAME) throw new Error(`Unsupported KDF: ${record.kdf}`);
+  if (record.iterations < 100_000) throw new Error(`Iteration count too low: ${record.iterations}`);
+  const salt = base64ToBytes(record.salt);
+  const iv   = base64ToBytes(record.iv);
+  const ct   = base64ToBytes(record.ciphertext);
+  const key  = await deriveKey(code, salt, record.iterations, 'decrypt');
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+  return dec.decode(plain);
+}
+
 // ---- Self-test (run from browser DevTools console) ---------------------
 
 /**
@@ -340,5 +478,27 @@ export async function __selfTest() {
   const { pat: afterRekey } = await unlockUserRecord(rekeyed, 'New-Stronger-Pass-123!');
   if (afterRekey !== pat) throw new Error('rekey round-trip failed');
 
-  return { ok: true, message: 'all auth.js self-tests passed' };
+  // escrow record round-trips under admin password
+  const adminPw = 'Admin-Strong-Pass-9!';
+  const escrow = await buildEscrowRecord({ username: 'demo', pat, adminPassword: adminPw });
+  const escrowed = await unlockEscrowRecord(escrow, adminPw);
+  if (escrowed !== pat) throw new Error('escrow round-trip failed');
+
+  // recovery code round-trips, normalises loose input
+  const code = generateRecoveryCode();
+  if (!/^([0-9A-HJKMNP-TV-Z]{4}-){5}[0-9A-HJKMNP-TV-Z]{4}$/.test(code)) {
+    throw new Error('recovery code shape unexpected: ' + code);
+  }
+  const recRec = await buildRecoveryRecord({ username: 'demo', pat, recoveryCode: code });
+  const recovered = await unlockRecoveryRecord(recRec, code.toLowerCase()); // case-insensitive
+  if (recovered !== pat) throw new Error('recovery round-trip failed');
+
+  // bad recovery code throws
+  let threwOnBadCode = false;
+  try {
+    await unlockRecoveryRecord(recRec, generateRecoveryCode());
+  } catch (e) { threwOnBadCode = true; }
+  if (!threwOnBadCode) throw new Error('wrong recovery code did not throw');
+
+  return { ok: true, message: 'all auth.js self-tests passed (incl. escrow + recovery)' };
 }

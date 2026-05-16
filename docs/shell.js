@@ -35,6 +35,9 @@ import {
   unlockUserRecord,
   rekeyUserRecord,
   checkPasswordStrength,
+  unlockRecoveryRecord,
+  normalizeRecoveryCode,
+  encryptSecret,
 } from './auth/auth.js';
 
 // ============================================================
@@ -300,6 +303,185 @@ function bindLoginForm() {
   submit.addEventListener('click', attempt);
   pwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') attempt(); });
   userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pwInput.focus(); });
+
+  // Forgot password — opens the admin recovery-code modal.
+  // Currently the recovery flow is admin-only because only admin has a
+  // recovery record (admin.recovery.json). Non-admins lose their password
+  // → admin resets it via the Admin Console's reset-user flow.
+  const forgotLink = $('#wt-forgot-link');
+  if (forgotLink) {
+    forgotLink.addEventListener('click', (e) => {
+      e.preventDefault();
+      openAdminRecoveryModal();
+    });
+  }
+}
+
+// ============================================================
+// Admin password recovery (via recovery code)
+// ============================================================
+
+const AUTH_RECOVERY_RAW = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/admin.recovery.json';
+
+/**
+ * Fetch the admin recovery record from worktrace-auth. Always cache-busted
+ * because the file gets overwritten when admin re-issues a code, and
+ * raw.githubusercontent.com otherwise serves stale copies.
+ */
+async function fetchAdminRecoveryRecord() {
+  const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const res = await fetch(AUTH_RECOVERY_RAW + buster, { cache: 'no-store' });
+  if (res.status === 404) {
+    throw new Error('Admin recovery is not set up. Run scripts/build_recovery_artifacts.py.');
+  }
+  if (!res.ok) throw new Error(`Failed to fetch recovery record (HTTP ${res.status})`);
+  return res.json();
+}
+
+/**
+ * Open the "Forgot password" modal for the admin account.
+ *
+ * Flow:
+ *   1. Admin enters the recovery code (handed to them at setup time)
+ *      and a new password.
+ *   2. We fetch admin.recovery.json, decrypt it with the code → admin PAT.
+ *   3. We pull the current admin.json (preserve immutable fields).
+ *   4. We re-encrypt the PAT under the new password → new admin.json.
+ *   5. We sign in as admin with the new password so they land in the
+ *      dashboard with a working session.
+ */
+function openAdminRecoveryModal() {
+  const codeInput    = el('input', { type: 'text', autocomplete: 'off',
+                                     placeholder: 'XXXX-XXXX-XXXX-XXXX-XXXX-XXXX' });
+  const newPwInput   = el('input', { type: 'password', autocomplete: 'new-password' });
+  const confirmInput = el('input', { type: 'password', autocomplete: 'new-password' });
+  const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
+  const workBox = el('p', { class: 'wt-modal__working', hidden: true });
+  const submit  = el('button', { class: 'wt-modal__submit' }, 'Reset admin password');
+  const cancel  = el('button', { class: 'wt-modal__cancel' }, 'Cancel');
+
+  async function attempt() {
+    errBox.hidden = true;
+    const code    = codeInput.value;
+    const newPw   = newPwInput.value;
+    const confirm = confirmInput.value;
+
+    if (!code || !newPw || !confirm) {
+      errBox.textContent = 'Fill in all three fields.';
+      errBox.hidden = false;
+      return;
+    }
+    try {
+      normalizeRecoveryCode(code); // throws if shape is wrong
+    } catch {
+      errBox.textContent = 'Recovery code must be 24 Crockford characters (letters + digits, hyphens optional).';
+      errBox.hidden = false;
+      return;
+    }
+    if (newPw !== confirm) {
+      errBox.textContent = 'New password and confirmation do not match.';
+      errBox.hidden = false;
+      return;
+    }
+    const policy = checkPasswordStrength(newPw);
+    if (!policy.ok) {
+      errBox.textContent = 'New password does not meet policy: ' + policy.reasons.join(' ');
+      errBox.hidden = false;
+      return;
+    }
+
+    submit.disabled = true;
+    submit.textContent = 'Recovering…';
+    workBox.hidden = false;
+    workBox.textContent = 'Unlocking recovery record (≈2s PBKDF2)…';
+
+    try {
+      // 1. Fetch the recovery record + current admin record. Need both —
+      //    recovery to decrypt the PAT, current for immutable metadata.
+      const [recovery, currentAdmin] = await Promise.all([
+        fetchAdminRecoveryRecord(),
+        fetchAuthRecord('admin'),
+      ]);
+
+      // 2. Decrypt recovery → admin PAT plaintext.
+      let adminPat;
+      try {
+        adminPat = await unlockRecoveryRecord(recovery, code);
+      } catch {
+        errBox.textContent = 'Recovery code is incorrect.';
+        errBox.hidden = false;
+        return;
+      }
+
+      // 3. Re-encrypt the PAT under the new password.
+      workBox.textContent = 'Re-encrypting admin record (≈2s)…';
+      const newBundle = await encryptSecret(adminPat, newPw);
+      const newRecord = {
+        ...currentAdmin,
+        ...newBundle,
+        updated_at: new Date().toISOString(),
+      };
+
+      // 4. We need a PAT in hand to commit. Use the admin PAT we just
+      //    decrypted — it has Contents:Write on worktrace-auth by
+      //    construction (it's the admin token). Stash it in SHELL_STATE
+      //    so commitToAuthRepo picks it up.
+      SHELL_STATE.pat = adminPat;
+      workBox.textContent = 'Saving new admin record…';
+      await commitToAuthRepo(
+        'users/admin.json',
+        JSON.stringify(newRecord, null, 2) + '\n',
+        'Admin password recovered via recovery code',
+      );
+
+      // 5. Sign the admin in directly — they came here to recover, not
+      //    re-type their fresh password. Mirrors the post-change UX of
+      //    the existing Change Password flow.
+      sessionStorage.setItem(SS.pat, adminPat);
+      sessionStorage.setItem(SS.username, 'admin');
+      SHELL_STATE.currentUser = (({ kdf, iterations, salt, iv, ciphertext, ...rest }) => rest)(newRecord);
+
+      closeModal();
+      hide('#wt-login');
+      await afterAuth();
+    } catch (err) {
+      errBox.textContent = `Recovery failed: ${err.message || err}`;
+      errBox.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Reset admin password';
+      workBox.hidden = true;
+    }
+  }
+
+  submit.addEventListener('click', attempt);
+  cancel.addEventListener('click', closeModal);
+
+  openModal([
+    el('h2', {}, 'Admin password recovery'),
+    el('p', { class: 'wt-modal__lead' },
+      'Use the recovery code you stashed when admin was first set up. ' +
+      'The code unlocks the admin PAT so you can set a new password.'),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Recovery code'),
+      codeInput,
+      el('p', { class: 'wt-modal__hint' },
+        '24 characters. Hyphens, spaces, and lowercase are all OK — we normalise on submit.')
+    ),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'New admin password'),
+      newPwInput,
+      el('p', { class: 'wt-modal__hint' },
+        'Min 12 chars, mixed case, one digit. Write it down somewhere this time.')
+    ),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Confirm new password'),
+      confirmInput
+    ),
+    errBox,
+    workBox,
+    el('div', { class: 'wt-modal__actions' }, cancel, submit),
+  ]);
 }
 
 // ============================================================
@@ -611,6 +793,18 @@ async function loadModule(moduleEntry) {
     },
     /** Raw GitHub API helper for admin operations (Phase 5e). */
     async ghFetch(ownerRepo, path) { return ghFetchFromRepo(ownerRepo, path); },
+    /**
+     * Commit a file into worktrace-auth via the current PAT. Used by
+     * the admin module to write reset-user records and by the
+     * change-password modal. Centralising it here so module code
+     * never reaches into shell internals.
+     */
+    async commitAuth(path, contentString, commitMessage) {
+      return commitToAuthRepo(path, contentString, commitMessage);
+    },
+    /** Modal helpers — modules build their own DOM, shell handles overlay. */
+    openModal(contents) { openModal(contents); },
+    closeModal() { closeModal(); },
   };
 
   if (typeof def.init === 'function') {

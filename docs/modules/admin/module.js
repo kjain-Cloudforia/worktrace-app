@@ -33,6 +33,11 @@
  */
 
 import timesheetModule from '../timesheet/module.js';
+import {
+  unlockEscrowRecord,
+  encryptSecret,
+  checkPasswordStrength,
+} from '../../auth/auth.js';
 
 // ---- local helpers (kept private to this module) -----------------------
 
@@ -54,8 +59,9 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-const AUTH_API     = 'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents/users';
-const AUTH_RAW_DIR = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/users';
+const AUTH_API       = 'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents/users';
+const AUTH_RAW_DIR   = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/users';
+const ESCROW_RAW_DIR = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/escrow';
 
 /**
  * List every users/<u>.json file in worktrace-auth.
@@ -75,6 +81,36 @@ async function fetchAuthFile(filename) {
   const full = await res.json();
   const { kdf, iterations, salt, iv, ciphertext, ...publicFields } = full;
   return publicFields;
+}
+
+/**
+ * Fetch a user's full auth record INCLUDING ciphertext fields. Used only
+ * by the reset-password flow, which needs to preserve immutable metadata
+ * (created_at, github_login, managed_repos, …) when writing the new file.
+ * Cache-busted because GitHub's raw CDN otherwise serves stale copies of
+ * just-rewritten files for several minutes.
+ */
+async function fetchAuthFileFull(username) {
+  const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const res = await fetch(
+    `${AUTH_RAW_DIR}/${encodeURIComponent(username)}.json${buster}`,
+    { cache: 'no-store' });
+  if (!res.ok) throw new Error(`Failed to fetch ${username}.json (HTTP ${res.status})`);
+  return res.json();
+}
+
+/**
+ * Fetch the escrow file for a given user. Returns null on 404 (escrow
+ * missing — admin needs to run scripts/build_recovery_artifacts.py).
+ */
+async function fetchEscrowFile(username) {
+  const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const res = await fetch(
+    `${ESCROW_RAW_DIR}/${encodeURIComponent(username)}.json${buster}`,
+    { cache: 'no-store' });
+  if (res.status === 404) return null;
+  if (!res.ok) throw new Error(`Failed to fetch escrow/${username}.json (HTTP ${res.status})`);
+  return res.json();
 }
 
 // Path within each user's data_repo where the Timesheet module's data
@@ -106,6 +142,203 @@ function userInitials(user) {
 function fmtTs(iso) {
   if (!iso) return '—';
   return iso.slice(0, 16).replace('T', ' ') + ' UTC';
+}
+
+// ---- Reset-password flow (admin-triggered) ------------------------------
+
+/**
+ * Open the "Reset password for <user>" modal. Shows:
+ *   - admin's own password input (used to decrypt escrow/<user>.json)
+ *   - new temporary password + confirm (used to re-encrypt user's PAT
+ *     into a new users/<user>.json record)
+ *
+ * On success, displays the new temp password in plaintext with a
+ * copy-to-clipboard button — admin must communicate it to the user
+ * out-of-band (Slack DM, in person, etc.). We don't email it because
+ * there's no backend to send mail from (that was the deliberate
+ * design choice in Phase 5h — see plan).
+ *
+ * The user is encouraged to change the temp password immediately on
+ * their next sign-in via the existing Change Password modal.
+ */
+function openResetPasswordModal(targetUser, ctx, refreshRoster) {
+  const adminPwInput = el('input', { type: 'password', autocomplete: 'current-password' });
+  const newPwInput   = el('input', { type: 'password', autocomplete: 'new-password' });
+  const confirmInput = el('input', { type: 'password', autocomplete: 'new-password' });
+  const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
+  const workBox = el('p', { class: 'wt-modal__working', hidden: true });
+  const submit  = el('button', { class: 'wt-modal__submit' }, 'Reset password');
+  const cancel  = el('button', { class: 'wt-modal__cancel' }, 'Cancel');
+
+  async function attempt() {
+    errBox.hidden = true;
+    const adminPw = adminPwInput.value;
+    const newPw   = newPwInput.value;
+    const confirm = confirmInput.value;
+
+    if (!adminPw || !newPw || !confirm) {
+      errBox.textContent = 'Fill in all three fields.';
+      errBox.hidden = false;
+      return;
+    }
+    if (newPw !== confirm) {
+      errBox.textContent = 'Temporary password and confirmation do not match.';
+      errBox.hidden = false;
+      return;
+    }
+    const policy = checkPasswordStrength(newPw);
+    if (!policy.ok) {
+      errBox.textContent = 'Temporary password does not meet policy: ' + policy.reasons.join(' ');
+      errBox.hidden = false;
+      return;
+    }
+
+    submit.disabled = true;
+    submit.textContent = 'Resetting…';
+    workBox.hidden = false;
+    workBox.textContent = 'Unlocking escrow (≈2s PBKDF2)…';
+
+    try {
+      // 1. Pull the escrow record + the user's current auth file. We need
+      //    the auth file to preserve immutable metadata (created_at,
+      //    github_login, data_repo, …) when writing the rekeyed record.
+      const [escrow, currentRecord] = await Promise.all([
+        fetchEscrowFile(targetUser.username),
+        fetchAuthFileFull(targetUser.username),
+      ]);
+      if (!escrow) {
+        errBox.textContent =
+          `No escrow file for @${targetUser.username}. Run scripts/build_recovery_artifacts.py to create one.`;
+        errBox.hidden = false;
+        return;
+      }
+
+      // 2. Decrypt escrow with admin's password → user's PAT plaintext.
+      let userPat;
+      try {
+        userPat = await unlockEscrowRecord(escrow, adminPw);
+      } catch (e) {
+        errBox.textContent = 'Admin password is incorrect.';
+        errBox.hidden = false;
+        return;
+      }
+
+      // 3. Re-encrypt the PAT under the new temp password.
+      workBox.textContent = 'Re-encrypting under new password (≈2s)…';
+      const newBundle = await encryptSecret(userPat, newPw);
+
+      // 4. Stitch the new bundle into the existing user record, preserving
+      //    every public field. updated_at gets bumped.
+      const newRecord = {
+        ...currentRecord,
+        ...newBundle,
+        updated_at: new Date().toISOString(),
+      };
+
+      // 5. Commit users/<username>.json back to worktrace-auth.
+      workBox.textContent = 'Saving to worktrace-auth…';
+      await ctx.commitAuth(
+        `users/${targetUser.username}.json`,
+        JSON.stringify(newRecord, null, 2) + '\n',
+        `Admin reset password for ${targetUser.username}`,
+      );
+
+      // Success — replace the modal contents with a "communicate this" panel
+      // showing the new temp password and a copy-to-clipboard button.
+      renderResetSuccess(targetUser, newPw, refreshRoster);
+    } catch (err) {
+      errBox.textContent = `Reset failed: ${err.message || err}`;
+      errBox.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Reset password';
+      workBox.hidden = true;
+    }
+  }
+
+  submit.addEventListener('click', attempt);
+  cancel.addEventListener('click', () => ctx.closeModal());
+
+  ctx.openModal([
+    el('h2', {}, `Reset password — @${targetUser.username}`),
+    el('p', { class: 'wt-modal__lead' },
+      `Set a temporary password for ${targetUser.display_name}. ` +
+      `${targetUser.display_name} will sign in with it and should rotate it immediately via Change password.`),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Your (admin) password'),
+      adminPwInput,
+      el('p', { class: 'wt-modal__hint' },
+        'Used to unlock the escrow file. Never sent anywhere.')
+    ),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, `New temporary password for @${targetUser.username}`),
+      newPwInput,
+      el('p', { class: 'wt-modal__hint' },
+        'Min 12 chars, mixed case, one digit. ' +
+        'You will see it once on the next screen so you can copy + share it.')
+    ),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Confirm temporary password'),
+      confirmInput
+    ),
+    errBox,
+    workBox,
+    el('div', { class: 'wt-modal__actions' }, cancel, submit),
+  ]);
+}
+
+/**
+ * Success state for the reset-password flow. Shows the freshly-set
+ * temporary password with a copy button. Once admin closes this, the
+ * password is gone — by design, since admin shouldn't be sitting on
+ * other users' passwords in memory.
+ */
+function renderResetSuccess(targetUser, tempPassword, refreshRoster) {
+  const panel = document.querySelector('#wt-modal .wt-modal__panel');
+  panel.innerHTML = '';
+
+  const pwField = el('input', {
+    type: 'text', readonly: true, value: tempPassword,
+    class: 'wt-login__input',
+    style: 'font-family: var(--wt-font-mono); user-select: all;',
+  });
+
+  const copyBtn = el('button', { class: 'wt-modal__cancel' }, 'Copy');
+  copyBtn.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(tempPassword);
+      copyBtn.textContent = 'Copied ✓';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+    } catch {
+      // clipboard may be unavailable on some browsers/contexts
+      pwField.select();
+      document.execCommand('copy');
+      copyBtn.textContent = 'Copied ✓';
+      setTimeout(() => { copyBtn.textContent = 'Copy'; }, 1500);
+    }
+  });
+
+  const doneBtn = el('button', { class: 'wt-modal__submit' }, 'Done');
+  doneBtn.addEventListener('click', () => {
+    // Close, then refresh the roster so any sync-state indicators update.
+    document.querySelector('#wt-modal').setAttribute('hidden', '');
+    if (typeof refreshRoster === 'function') refreshRoster();
+  });
+
+  panel.append(
+    el('h2', {}, 'Password reset ✓'),
+    el('p', { class: 'wt-modal__success' },
+      `Temporary password set for ${targetUser.display_name} (@${targetUser.username}).`),
+    el('p', { class: 'wt-modal__lead' },
+      'Send this to them out-of-band (Slack DM, in person). ' +
+      'Tell them to sign in and rotate it immediately via Change password.'),
+    el('div', { style: 'display: flex; gap: 8px; align-items: stretch;' },
+      pwField, copyBtn
+    ),
+    el('p', { class: 'wt-modal__hint' },
+      'This is the only time it is shown. Once you close, the password is gone from this session.'),
+    el('div', { class: 'wt-modal__actions' }, doneBtn),
+  );
 }
 
 // ---- module export -----------------------------------------------------
@@ -318,6 +551,13 @@ export default {
           'no sync yet');
       }
 
+      // The "Reset password" button is offered for every non-admin
+      // user. Admins go through the recovery-code flow on the login
+      // screen instead — admin can't reset their own password from
+      // inside an authenticated session because doing so would imply
+      // they remember it (and could use the Change Password flow).
+      const canReset = !user.is_admin;
+
       return el('div', { class: 'wt-admin-card' },
         el('div', { class: 'wt-admin-card__avatar' }, initials),
         el('div', { class: 'wt-admin-card__body' },
@@ -339,6 +579,12 @@ export default {
                 class: 'wt-admin-card__btn',
                 onclick: () => { viewingUser = user; render(); }
               }, 'View timesheet →')
+            : null,
+          canReset
+            ? el('button', {
+                class: 'wt-admin-card__btn wt-admin-card__btn--ghost',
+                onclick: () => openResetPasswordModal(user, ctx, render),
+              }, 'Reset password')
             : null
         )
       );

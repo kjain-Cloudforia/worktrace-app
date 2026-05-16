@@ -163,6 +163,9 @@
 .wt-admin-card__actions {
   display: flex;
   align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
 }
 .wt-admin-card__btn {
   background: transparent;
@@ -177,6 +180,16 @@
 .wt-admin-card__btn:hover {
   background: var(--wt-accent);
   color: #fff;
+}
+/* Ghost variant — secondary actions (Reset password). Keeps the
+   roster visually calm; only the primary "View timesheet" stands out. */
+.wt-admin-card__btn--ghost {
+  border-color: var(--wt-tile-border);
+  color: var(--wt-fg-muted);
+}
+.wt-admin-card__btn--ghost:hover {
+  background: var(--wt-tile-border);
+  color: var(--wt-fg);
 }
 
 /* ---- Drill-in user timesheet header ------------------------- */
