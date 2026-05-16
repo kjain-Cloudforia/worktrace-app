@@ -59,9 +59,13 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
-const AUTH_API       = 'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents/users';
-const AUTH_RAW_DIR   = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/users';
-const ESCROW_RAW_DIR = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/escrow';
+// Use the Contents API for *all* worktrace-auth reads. raw.githubusercontent.com
+// caches by path and can serve stale records for minutes after a write, which
+// would cause spurious "wrong password" errors after a reset or rekey.
+const AUTH_API_BASE  = 'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents';
+const AUTH_API       = `${AUTH_API_BASE}/users`;        // listing endpoint
+const AUTH_USERS_API = `${AUTH_API_BASE}/users`;        // per-file fetches
+const ESCROW_API     = `${AUTH_API_BASE}/escrow`;
 
 /**
  * List every users/<u>.json file in worktrace-auth.
@@ -76,7 +80,11 @@ async function listAllAuthFiles() {
 
 /** Fetch one user's auth file (public fields only — we never use the ciphertext). */
 async function fetchAuthFile(filename) {
-  const res = await fetch(`${AUTH_RAW_DIR}/${filename}`, { cache: 'no-store' });
+  const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const res = await fetch(`${AUTH_USERS_API}/${filename}${buster}`, {
+    headers: { 'Accept': 'application/vnd.github.v3.raw' },
+    cache: 'no-store',
+  });
   if (!res.ok) throw new Error(`Failed to fetch ${filename} (HTTP ${res.status})`);
   const full = await res.json();
   const { kdf, iterations, salt, iv, ciphertext, ...publicFields } = full;
@@ -87,14 +95,12 @@ async function fetchAuthFile(filename) {
  * Fetch a user's full auth record INCLUDING ciphertext fields. Used only
  * by the reset-password flow, which needs to preserve immutable metadata
  * (created_at, github_login, managed_repos, …) when writing the new file.
- * Cache-busted because GitHub's raw CDN otherwise serves stale copies of
- * just-rewritten files for several minutes.
  */
 async function fetchAuthFileFull(username) {
   const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const res = await fetch(
-    `${AUTH_RAW_DIR}/${encodeURIComponent(username)}.json${buster}`,
-    { cache: 'no-store' });
+    `${AUTH_USERS_API}/${encodeURIComponent(username)}.json${buster}`,
+    { headers: { 'Accept': 'application/vnd.github.v3.raw' }, cache: 'no-store' });
   if (!res.ok) throw new Error(`Failed to fetch ${username}.json (HTTP ${res.status})`);
   return res.json();
 }
@@ -106,8 +112,8 @@ async function fetchAuthFileFull(username) {
 async function fetchEscrowFile(username) {
   const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const res = await fetch(
-    `${ESCROW_RAW_DIR}/${encodeURIComponent(username)}.json${buster}`,
-    { cache: 'no-store' });
+    `${ESCROW_API}/${encodeURIComponent(username)}.json${buster}`,
+    { headers: { 'Accept': 'application/vnd.github.v3.raw' }, cache: 'no-store' });
   if (res.status === 404) return null;
   if (!res.ok) throw new Error(`Failed to fetch escrow/${username}.json (HTTP ${res.status})`);
   return res.json();

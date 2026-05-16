@@ -38,6 +38,8 @@ import {
   unlockRecoveryRecord,
   normalizeRecoveryCode,
   encryptSecret,
+  buildEscrowRecord,
+  unlockEscrowRecord,
 } from './auth/auth.js';
 
 // ============================================================
@@ -53,6 +55,11 @@ const SS = {
 
 const GITHUB_API = 'https://api.github.com';
 const AUTH_RAW   = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/users';
+// Contents API path for worktrace-auth — used as the AUTHORITATIVE source
+// for auth records (sign-in, recovery, password change). Unlike raw.github
+// usercontent.com, this endpoint is keyed by commit, never CDN-cached
+// stale, and works without a PAT for public repos.
+const AUTH_API   = 'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents';
 
 let SHELL_STATE = {
   registry: null,        // module-registry.json (loaded once at boot)
@@ -170,11 +177,20 @@ async function ghFetchFromRepo(ownerRepo, path) {
  * Returns the encrypted user record JSON, or throws on 404 / parse error.
  */
 async function fetchAuthRecord(username) {
+  // Use the Contents API instead of raw.githubusercontent.com — the raw
+  // CDN keys its cache by path (ignoring query strings), so a cache-buster
+  // doesn't help when an edge is serving the pre-rekey blob. The API
+  // returns the authoritative content for the current commit.
+  //
+  // Accept: vnd.github.v3.raw makes the response body the file itself
+  // (rather than the wrapping {content: base64} envelope). The endpoint
+  // is public-readable for our public repo — no PAT needed.
   const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  const res = await fetch(
-    `${AUTH_RAW}/${encodeURIComponent(username)}.json${buster}`,
-    { cache: 'no-store' },
-  );
+  const url = `${AUTH_API}/users/${encodeURIComponent(username)}.json${buster}`;
+  const res = await fetch(url, {
+    headers: { 'Accept': 'application/vnd.github.v3.raw' },
+    cache: 'no-store',
+  });
   if (res.status === 404) {
     const err = new Error('No such user.');
     err.code = 'USER_NOT_FOUND';
@@ -321,16 +337,20 @@ function bindLoginForm() {
 // Admin password recovery (via recovery code)
 // ============================================================
 
-const AUTH_RECOVERY_RAW = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/admin.recovery.json';
-
 /**
- * Fetch the admin recovery record from worktrace-auth. Always cache-busted
- * because the file gets overwritten when admin re-issues a code, and
- * raw.githubusercontent.com otherwise serves stale copies.
+ * Fetch the admin recovery record from worktrace-auth. Uses the Contents
+ * API for the same reason as fetchAuthRecord — raw CDN caches by path
+ * and can serve a stale recovery blob for minutes after the file is
+ * regenerated, which would cause "Recovery code is incorrect" errors
+ * for the freshly-minted code.
  */
 async function fetchAdminRecoveryRecord() {
   const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  const res = await fetch(AUTH_RECOVERY_RAW + buster, { cache: 'no-store' });
+  const url = `${AUTH_API}/admin.recovery.json${buster}`;
+  const res = await fetch(url, {
+    headers: { 'Accept': 'application/vnd.github.v3.raw' },
+    cache: 'no-store',
+  });
   if (res.status === 404) {
     throw new Error('Admin recovery is not set up. Run scripts/build_recovery_artifacts.py.');
   }
@@ -572,6 +592,72 @@ async function commitToAuthRepo(path, contentString, commitMessage) {
   return res.json();
 }
 
+/**
+ * List + re-key every escrow/*.json file in worktrace-auth so they stay
+ * unlockable by the admin's NEW password. Called from the Change Password
+ * flow when admin changes their own password (escrows are encrypted under
+ * admin's password, so they'd otherwise become unreadable + reset-user
+ * would silently break).
+ *
+ * Each file is re-fetched, decrypted with the old admin password, the
+ * embedded user-PAT extracted, re-encrypted under the new admin password,
+ * and committed back. We do this serially (not parallel) to keep the
+ * GitHub API happy on small teams and to give clear progress feedback.
+ *
+ * Returns the count of files rekeyed. Throws on any failure — the caller
+ * is responsible for telling the admin "your password is changed but
+ * escrow rekey failed, run scripts/build_recovery_artifacts.py".
+ */
+async function rebuildAllEscrowFiles(oldAdminPw, newAdminPw, progressCallback) {
+  // 1. List every file under escrow/ via the Contents API.
+  const listUrl = `${AUTH_API}/escrow`;
+  const listRes = await fetch(listUrl, { cache: 'no-store' });
+  if (listRes.status === 404) {
+    // No escrow directory exists yet — nothing to rebuild.
+    return 0;
+  }
+  if (!listRes.ok) {
+    throw new Error(`Failed to list escrow files (HTTP ${listRes.status})`);
+  }
+  const files = (await listRes.json())
+    .filter(f => f.type === 'file' && f.name.endsWith('.json'));
+
+  // 2. For each escrow file: fetch, decrypt with old pw, re-encrypt under new pw, commit.
+  let count = 0;
+  for (const f of files) {
+    if (typeof progressCallback === 'function') {
+      progressCallback(`Re-keying escrow for ${f.name.replace(/\.json$/, '')} (${count + 1}/${files.length})…`);
+    }
+    const contentUrl = `${AUTH_API}/escrow/${encodeURIComponent(f.name)}`;
+    const r = await fetch(contentUrl, {
+      headers: { 'Accept': 'application/vnd.github.v3.raw' },
+      cache: 'no-store',
+    });
+    if (!r.ok) throw new Error(`Failed to fetch escrow/${f.name} (HTTP ${r.status})`);
+    const escrow = await r.json();
+
+    let userPat;
+    try {
+      userPat = await unlockEscrowRecord(escrow, oldAdminPw);
+    } catch {
+      throw new Error(`Old admin password doesn't unlock escrow/${f.name}. ` +
+                      `It may have been built under a different password — run scripts/build_recovery_artifacts.py.`);
+    }
+
+    const username = escrow.username || f.name.replace(/\.json$/, '');
+    const newEscrow = await buildEscrowRecord({
+      username, pat: userPat, adminPassword: newAdminPw,
+    });
+    await commitToAuthRepo(
+      `escrow/${f.name}`,
+      JSON.stringify(newEscrow, null, 2) + '\n',
+      `Rekey escrow for ${username} (admin password changed)`,
+    );
+    count++;
+  }
+  return count;
+}
+
 // ============================================================
 // Change-password flow
 // ============================================================
@@ -650,6 +736,31 @@ function openChangePasswordModal() {
         JSON.stringify(newRecord, null, 2) + '\n',
         `Password change for ${SHELL_STATE.currentUser.username}`,
       );
+
+      // 3b. If the current user is an admin, every escrow/<u>.json was
+      //     encrypted under their OLD password — those files would be
+      //     unrecoverable after this point. Re-key them all under the
+      //     new password so the reset-user flow keeps working.
+      //     Non-admins don't touch escrow files: their password only
+      //     guards their own users/<u>.json.
+      if (SHELL_STATE.currentUser.is_admin) {
+        try {
+          const n = await rebuildAllEscrowFiles(
+            oldPw, newPw,
+            (msg) => { workBox.textContent = msg; },
+          );
+          if (n > 0) {
+            workBox.textContent = `Re-keyed ${n} escrow file${n === 1 ? '' : 's'} under new admin password.`;
+          }
+        } catch (escrowErr) {
+          // Don't roll back the admin-password change — it already
+          // landed. Surface a follow-up action instead.
+          errBox.textContent =
+            'Admin password changed, but escrow re-key failed: ' + escrowErr.message +
+            ' — run scripts/build_recovery_artifacts.py to repair before resetting any user.';
+          errBox.hidden = false;
+        }
+      }
 
       // 4. Show success + force re-login. We don't try to silently
       //    keep the session — the cleanest UX is "sign in again with
