@@ -29,6 +29,10 @@
 
 * { box-sizing: border-box; }
 html, body { margin: 0; padding: 0; }
+/* HTML5 hidden attribute — must `!important` because class rules below
+   set explicit display values (e.g. .wt-login { display: flex }) that
+   would otherwise override the browser default. */
+[hidden] { display: none !important; }
 body {
   font-family: var(--wt-font-sans);
   font-size: 15px;
