@@ -213,7 +213,10 @@ function signOut() {
   SHELL_STATE.pat = null;
   SHELL_STATE.currentUser = null;
   if (SHELL_STATE.headerTimer) clearInterval(SHELL_STATE.headerTimer);
-  location.reload();
+  // Replace location so the previous URL hash (#/timesheet, etc.) doesn't
+  // survive the reload — otherwise after sign-in the user lands directly
+  // into the detail route of whatever module they were last in.
+  location.replace(location.pathname);
 }
 
 /**

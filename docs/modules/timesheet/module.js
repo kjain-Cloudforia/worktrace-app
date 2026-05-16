@@ -148,65 +148,47 @@ export default {
   },
 
   /**
-   * Detail view: week-by-week timeline of every entry, with a teammate
-   * picker so you can view anyone's data.
+   * Detail view: week-by-week timeline of every entry.
+   *
+   * In the per-user-repo model (Phase 5a+), each user only sees their own
+   * data here — there's no teammate picker. Admins view other users via
+   * the dedicated admin module (Phase 5d).
    */
   async renderDetail(container, ctx) {
-    // State for the detail view
-    let viewingUserId = ctx.currentUser.user_id;
+    container.innerHTML = '';
+    container.appendChild(el('p', { class: 'wt-tile__placeholder' }, 'Loading…'));
 
-    async function render() {
+    let data;
+    try {
+      data = await ctx.fetchMyData();
+    } catch (err) {
       container.innerHTML = '';
-      container.appendChild(el('p', { class: 'wt-tile__placeholder' }, 'Loading…'));
+      container.appendChild(el('p', { class: 'wt-error' }, `Error loading data: ${err.message}`));
+      return;
+    }
 
-      let data;
-      try {
-        data = await ctx.fetchUserData(viewingUserId);
-      } catch (err) {
-        container.innerHTML = '';
-        container.appendChild(el('p', { class: 'wt-error' }, `Error loading data: ${err.message}`));
-        return;
-      }
+    container.innerHTML = '';
 
-      container.innerHTML = '';
-
-      // User picker (only show if there's more than one user)
-      if (ctx.allUsers.length > 1) {
-        const picker = el('div', { class: 'wt-ts-picker' },
-          el('label', { class: 'wt-ts-picker__label' }, 'Viewing as: '),
-          el('select', {
-              class: 'wt-ts-picker__select',
-              onchange: (e) => { viewingUserId = e.target.value; render(); }
-            },
-            ...ctx.allUsers.map(u =>
-              el('option', { value: u.user_id, selected: u.user_id === viewingUserId },
-                `${u.display_name}${u.user_id === ctx.currentUser.user_id ? ' (you)' : ''}`)
-            )
+    // Summary banner
+    const counts = totalCounts(data.entries || []);
+    const summary = el('div', { class: 'wt-ts-summary' },
+      el('div', { class: 'wt-ts-summary__user' },
+        el('div', { class: 'wt-ts-summary__name' }, data.display_name || data.user_id),
+        el('div', { class: 'wt-ts-summary__meta' },
+          `${(data.entries || []).length} entries · ` +
+          `last synced ${data.last_synced_at?.slice(0, 16).replace('T', ' ') || '—'} UTC`)
+      ),
+      el('div', { class: 'wt-ts-summary__counts' },
+        ...['bullets', 'deploys', 'creates', 'modifications', 'investigations', 'fixes', 'users_provisioned']
+          .filter(k => counts[k] > 0)
+          .map(k => el('span', { class: 'wt-ts-summary__chip' },
+            el('strong', {}, String(counts[k])),
+            ' ',
+            k.replace(/_/g, ' '))
           )
-        );
-        container.appendChild(picker);
-      }
-
-      // Summary banner
-      const counts = totalCounts(data.entries || []);
-      const summary = el('div', { class: 'wt-ts-summary' },
-        el('div', { class: 'wt-ts-summary__user' },
-          el('div', { class: 'wt-ts-summary__name' }, data.display_name || data.user_id),
-          el('div', { class: 'wt-ts-summary__meta' },
-            `${(data.entries || []).length} entries · ` +
-            `last synced ${data.last_synced_at?.slice(0, 16).replace('T', ' ') || '—'} UTC`)
-        ),
-        el('div', { class: 'wt-ts-summary__counts' },
-          ...['bullets', 'deploys', 'creates', 'modifications', 'investigations', 'fixes', 'users_provisioned']
-            .filter(k => counts[k] > 0)
-            .map(k => el('span', { class: 'wt-ts-summary__chip' },
-              el('strong', {}, String(counts[k])),
-              ' ',
-              k.replace(/_/g, ' '))
-            )
-        )
-      );
-      container.appendChild(summary);
+      )
+    );
+    container.appendChild(summary);
 
       // Entries — newest first, grouped by date
       const entries = [...(data.entries || [])].sort((a, b) =>
@@ -247,11 +229,8 @@ export default {
             )
           )
         );
-        timeline.appendChild(dayBlock);
-      }
-      container.appendChild(timeline);
+      timeline.appendChild(dayBlock);
     }
-
-    await render();
+    container.appendChild(timeline);
   },
 };
