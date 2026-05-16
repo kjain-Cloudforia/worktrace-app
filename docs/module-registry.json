@@ -7,6 +7,12 @@
       "displayName": "Timesheet",
       "description": "Daily work log by project",
       "enabled": true
+    },
+    {
+      "id": "admin",
+      "displayName": "Admin Console",
+      "description": "Team roster · cross-user view",
+      "enabled": true
     }
   ]
 }
