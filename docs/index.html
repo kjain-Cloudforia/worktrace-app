@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>WorkTrace — AI-Powered Developer Productivity Platform</title>
+  <meta name="description" content="WorkTrace dashboard — module grid for personal productivity tracking. All data private to the team." />
+  <link rel="stylesheet" href="shell.css" />
+</head>
+<body>
+
+  <!--
+    The shell is rendered entirely by shell.js. This skeleton only provides
+    mount points so JS can take over after DOMContentLoaded.
+
+    Mount points:
+      #wt-header       — top bar (date/time, platform title, user)
+      #wt-login        — first-visit login screen (PAT paste)
+      #wt-app          — main app surface (grid or detail view)
+      #wt-error        — fatal error banner (auth failure, etc.)
+
+    Hide everything until JS decides what to show.
+  -->
+
+  <header id="wt-header" class="wt-header" hidden></header>
+
+  <main id="wt-main">
+    <section id="wt-login" class="wt-login" hidden>
+      <div class="wt-login__panel">
+        <h1>WorkTrace</h1>
+        <p class="wt-login__tagline">AI-powered developer productivity platform.</p>
+
+        <label class="wt-login__label" for="wt-pat-input">
+          Paste a GitHub fine-grained PAT with <strong>Contents: Read</strong> on
+          <code>kjain-Cloudforia/worktrace-data</code>:
+        </label>
+        <input
+          id="wt-pat-input"
+          type="password"
+          class="wt-login__input"
+          placeholder="github_pat_…"
+          autocomplete="off"
+          spellcheck="false" />
+
+        <button id="wt-login-submit" class="wt-login__submit" type="button">
+          Sign in
+        </button>
+
+        <p class="wt-login__hint">
+          Your token stays in your browser only (localStorage). It is never sent anywhere
+          except <code>api.github.com</code>. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Generate one →</a>
+        </p>
+        <p class="wt-login__error" id="wt-login-error" hidden></p>
+      </div>
+    </section>
+
+    <section id="wt-app" class="wt-app" hidden>
+      <!-- Grid (tile) view or detail view rendered here by shell.js -->
+    </section>
+
+    <section id="wt-error" class="wt-error" hidden></section>
+  </main>
+
+  <!-- module-registry is fetched at runtime so adding a module doesn't require editing index.html -->
+  <script type="module" src="shell.js"></script>
+</body>
+</html>

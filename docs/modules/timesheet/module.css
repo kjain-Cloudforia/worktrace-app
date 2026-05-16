@@ -1,0 +1,179 @@
+/* Timesheet module — scoped styles. All class names prefixed `wt-ts-`. */
+
+/* ---- Tile view ---------------------------------------------- */
+.wt-ts-tile { display: flex; flex-direction: column; gap: 16px; height: 100%; }
+
+.wt-ts-tile__latest { flex: 1; }
+.wt-ts-tile__date {
+  font-size: 12px;
+  color: var(--wt-fg-muted);
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 8px;
+}
+.wt-ts-tile__entry { margin-bottom: 10px; }
+.wt-ts-tile__entry:last-child { margin-bottom: 0; }
+.wt-ts-tile__project {
+  font-size: 12px;
+  color: var(--wt-accent);
+  font-weight: 600;
+  margin-bottom: 2px;
+}
+.wt-ts-tile__headline {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--wt-fg);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.wt-ts-tile__stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  padding-top: 12px;
+  border-top: 1px solid var(--wt-tile-border);
+}
+.wt-ts-tile__stat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.wt-ts-tile__stat-num {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--wt-accent);
+  font-variant-numeric: tabular-nums;
+}
+.wt-ts-tile__stat-label {
+  font-size: 11px;
+  color: var(--wt-fg-muted);
+  text-align: center;
+}
+.wt-ts-tile__hint {
+  font-size: 11px;
+  color: var(--wt-fg-muted);
+  text-align: right;
+}
+
+/* ---- Detail view -------------------------------------------- */
+.wt-ts-picker {
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.wt-ts-picker__label { color: var(--wt-fg-muted); font-size: 13px; }
+.wt-ts-picker__select {
+  font-family: inherit;
+  font-size: 14px;
+  padding: 4px 8px;
+  border: 1px solid var(--wt-tile-border);
+  border-radius: 6px;
+  background: #fff;
+  color: var(--wt-fg);
+  cursor: pointer;
+}
+
+.wt-ts-summary {
+  background: var(--wt-accent-soft);
+  border-radius: 8px;
+  padding: 16px;
+  margin-bottom: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.wt-ts-summary__name {
+  font-weight: 600;
+  font-size: 18px;
+  color: var(--wt-fg);
+}
+.wt-ts-summary__meta {
+  font-size: 12px;
+  color: var(--wt-fg-muted);
+  margin-top: 2px;
+}
+.wt-ts-summary__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wt-ts-summary__chip {
+  background: #fff;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  color: var(--wt-fg-muted);
+  border: 1px solid var(--wt-tile-border);
+}
+.wt-ts-summary__chip strong { color: var(--wt-accent); font-weight: 700; }
+
+.wt-ts-timeline { display: flex; flex-direction: column; gap: 24px; }
+.wt-ts-day { display: flex; flex-direction: column; gap: 12px; }
+.wt-ts-day__date {
+  margin: 0;
+  font-size: 14px;
+  color: var(--wt-fg-muted);
+  font-variant-numeric: tabular-nums;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--wt-tile-border);
+}
+
+.wt-ts-entry {
+  padding: 12px 16px;
+  background: var(--wt-tile-bg);
+  border-radius: 8px;
+  border: 1px solid var(--wt-tile-border);
+}
+.wt-ts-entry__project {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--wt-accent);
+  margin-bottom: 4px;
+}
+.wt-ts-entry__headline {
+  font-size: 14px;
+  line-height: 1.55;
+  color: var(--wt-fg);
+}
+.wt-ts-entry__tags {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.wt-ts-tag {
+  font-size: 11px;
+  background: var(--wt-bg);
+  color: var(--wt-fg-muted);
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--wt-tile-border);
+}
+
+.wt-ts-entry__bullets {
+  margin-top: 12px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--wt-tile-border);
+}
+.wt-ts-entry__bullets > summary {
+  cursor: pointer;
+  font-size: 12px;
+  color: var(--wt-fg-muted);
+  padding: 4px 0;
+}
+.wt-ts-entry__bullets > summary:hover { color: var(--wt-accent); }
+.wt-ts-bullets {
+  margin: 8px 0 4px;
+  padding-left: 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--wt-fg);
+}
+.wt-ts-bullets li {
+  margin-bottom: 8px;
+}
+.wt-ts-bullets strong { color: var(--wt-fg); }
+.wt-ts-bullets code { font-size: 0.9em; }

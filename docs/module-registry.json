@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "_note": "Ordered list of modules the shell should load. The shell dynamically imports each module's module.js and slots them into the grid. Adding a new module = add an entry here + create docs/modules/<id>/. Tiles render in array order.",
+  "modules": [
+    {
+      "id": "timesheet",
+      "displayName": "Timesheet",
+      "description": "Daily work log by project",
+      "enabled": true
+    }
+  ],
+  "data_repo": {
+    "owner": "kjain-Cloudforia",
+    "name": "worktrace-data",
+    "branch": "main",
+    "_note": "Where modules fetch their JSON from. Path within = modules/<module_id>/users/<user_id>.json"
+  }
+}
