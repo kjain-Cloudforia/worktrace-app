@@ -119,7 +119,20 @@ export default {
   requiresAdmin: true,
 
   async init(_shell) {
-    // No-op; data loaded lazily per view.
+    // The Admin module re-uses the Timesheet module's renderDetail UI
+    // for the "view as <user>" drill-in. The Timesheet module is hidden
+    // from admins (hideForAdmin: true), so the shell never injects its
+    // stylesheet during loadModule. We inject it ourselves here, using
+    // the same `wt-module-css--<id>` id pattern the shell uses, so the
+    // dedupe-by-id check stays consistent across both code paths.
+    const cssId = 'wt-module-css--timesheet';
+    if (!document.getElementById(cssId)) {
+      const link = document.createElement('link');
+      link.id = cssId;
+      link.rel = 'stylesheet';
+      link.href = './modules/timesheet/module.css';
+      document.head.appendChild(link);
+    }
   },
 
   /**
