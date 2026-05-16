@@ -31,7 +31,11 @@
  * Vanilla JS, no framework, no build step. Targets modern evergreen browsers.
  */
 
-import { unlockUserRecord } from './auth/auth.js';
+import {
+  unlockUserRecord,
+  rekeyUserRecord,
+  checkPasswordStrength,
+} from './auth/auth.js';
 
 // ============================================================
 // Config + constants
@@ -283,6 +287,226 @@ function bindLoginForm() {
 }
 
 // ============================================================
+// Modal infrastructure (used by change-password, future flows)
+// ============================================================
+
+function openModal(contents) {
+  const modal = $('#wt-modal');
+  const panel = modal.querySelector('.wt-modal__panel');
+  panel.innerHTML = '';
+  contents.forEach(c => panel.appendChild(c));
+  show('#wt-modal');
+  // Esc closes
+  document.addEventListener('keydown', _modalEscHandler);
+  // Backdrop click closes (only when the actual backdrop is clicked,
+  // not the panel inside it).
+  modal.querySelector('.wt-modal__backdrop')
+       .addEventListener('click', _modalBackdropHandler);
+  // Focus the first input for snappy typing
+  const firstInput = panel.querySelector('input');
+  if (firstInput) firstInput.focus();
+}
+
+function closeModal() {
+  hide('#wt-modal');
+  document.removeEventListener('keydown', _modalEscHandler);
+}
+
+function _modalEscHandler(e) { if (e.key === 'Escape') closeModal(); }
+function _modalBackdropHandler() { closeModal(); }
+
+// ============================================================
+// GitHub commit helper (for write operations like password change)
+// ============================================================
+
+const AUTH_REPO = 'kjain-Cloudforia/worktrace-auth';
+
+/**
+ * Convert a UTF-8 string to base64 (browser-safe; handles non-ASCII).
+ * GitHub Contents API expects content in base64.
+ */
+function strToBase64(s) {
+  return btoa(unescape(encodeURIComponent(s)));
+}
+
+/**
+ * Commit a file to worktrace-auth via the GitHub Contents API.
+ *
+ * Caller MUST hold a PAT (in SHELL_STATE.pat) with Contents:Read+Write
+ * on worktrace-auth. For a regular user this is true if their PAT
+ * scope was extended; for admin it always is.
+ *
+ * Handles both create (no `sha`) and update (with current sha for
+ * optimistic concurrency control).
+ */
+async function commitToAuthRepo(path, contentString, commitMessage) {
+  const url = `${GITHUB_API}/repos/${AUTH_REPO}/contents/${path}`;
+  // Probe for existing file to grab its SHA — required by the PUT
+  // endpoint when updating, must be omitted when creating.
+  let sha = null;
+  const probe = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${SHELL_STATE.pat}` },
+  });
+  if (probe.status === 200) {
+    sha = (await probe.json()).sha;
+  } else if (probe.status !== 404) {
+    throw new Error(`Failed to read existing file: HTTP ${probe.status}`);
+  }
+  const body = {
+    message: commitMessage,
+    content: strToBase64(contentString),
+    branch: 'main',
+  };
+  if (sha) body.sha = sha;
+
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${SHELL_STATE.pat}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Commit failed: HTTP ${res.status} — ${txt.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+// ============================================================
+// Change-password flow
+// ============================================================
+
+function openChangePasswordModal() {
+  if (!SHELL_STATE.currentUser) return;
+
+  const oldInput = el('input', { type: 'password', autocomplete: 'current-password' });
+  const newInput = el('input', { type: 'password', autocomplete: 'new-password' });
+  const confirmInput = el('input', { type: 'password', autocomplete: 'new-password' });
+  const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
+  const workBox = el('p', { class: 'wt-modal__working', hidden: true });
+  const submit  = el('button', { class: 'wt-modal__submit' }, 'Change password');
+  const cancel  = el('button', { class: 'wt-modal__cancel' }, 'Cancel');
+
+  async function attempt() {
+    errBox.hidden = true;
+    const oldPw = oldInput.value;
+    const newPw = newInput.value;
+    const confirmPw = confirmInput.value;
+
+    if (!oldPw || !newPw || !confirmPw) {
+      errBox.textContent = 'Fill in all three fields.';
+      errBox.hidden = false;
+      return;
+    }
+    if (newPw !== confirmPw) {
+      errBox.textContent = 'New password and confirmation do not match.';
+      errBox.hidden = false;
+      return;
+    }
+    if (newPw === oldPw) {
+      errBox.textContent = 'New password must be different from your current one.';
+      errBox.hidden = false;
+      return;
+    }
+    const policy = checkPasswordStrength(newPw);
+    if (!policy.ok) {
+      errBox.textContent = 'New password does not meet policy: ' + policy.reasons.join(' ');
+      errBox.hidden = false;
+      return;
+    }
+
+    submit.disabled = true;
+    submit.textContent = 'Changing…';
+    workBox.hidden = false;
+    workBox.textContent = 'Re-encrypting (≈3 seconds — two PBKDF2 derivations)…';
+
+    try {
+      // 1. Fetch the user's current auth file (always re-fetch fresh so
+      //    we have the latest server state, not whatever was cached at
+      //    sign-in time).
+      const currentRecord = await fetchAuthRecord(SHELL_STATE.currentUser.username);
+
+      // 2. Re-key. This validates the old password (throws if wrong)
+      //    and re-encrypts the underlying PAT with the new password.
+      let newRecord;
+      try {
+        newRecord = await rekeyUserRecord(currentRecord, oldPw, newPw);
+      } catch (e) {
+        // AES-GCM throws on wrong password; surface as friendly error.
+        if (e.code === 'WEAK_PASSWORD') {
+          errBox.textContent = e.message;
+        } else {
+          errBox.textContent = 'Current password is incorrect.';
+        }
+        errBox.hidden = false;
+        return;
+      }
+
+      // 3. Commit the updated user file back to worktrace-auth.
+      workBox.textContent = 'Saving to worktrace-auth…';
+      const path = `users/${SHELL_STATE.currentUser.username}.json`;
+      await commitToAuthRepo(
+        path,
+        JSON.stringify(newRecord, null, 2) + '\n',
+        `Password change for ${SHELL_STATE.currentUser.username}`,
+      );
+
+      // 4. Show success + force re-login. We don't try to silently
+      //    keep the session — the cleanest UX is "sign in again with
+      //    your new password" and it avoids any state-drift bugs.
+      workBox.hidden = true;
+      const panel = $('#wt-modal').querySelector('.wt-modal__panel');
+      panel.innerHTML = '';
+      panel.append(
+        el('h2', {}, 'Password changed ✓'),
+        el('p', { class: 'wt-modal__success' },
+          'Your password has been updated. Please sign in again with your new password.'),
+        el('div', { class: 'wt-modal__actions' },
+          el('button', { class: 'wt-modal__submit', onclick: signOut }, 'Sign in again')
+        )
+      );
+    } catch (err) {
+      errBox.textContent = err.message || 'Something went wrong.';
+      errBox.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Change password';
+      workBox.hidden = workBox.textContent.startsWith('Saving') ? false : true;
+    }
+  }
+
+  submit.addEventListener('click', attempt);
+  cancel.addEventListener('click', closeModal);
+  confirmInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') attempt(); });
+
+  openModal([
+    el('h2', {}, 'Change password'),
+    el('p', { class: 'wt-modal__lead' },
+      `Signed in as ${SHELL_STATE.currentUser.display_name || SHELL_STATE.currentUser.username}.`
+    ),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Current password'),
+      oldInput,
+    ),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'New password'),
+      newInput,
+      el('p', { class: 'wt-modal__hint' },
+        'At least 12 characters, mixed case, includes a digit.')
+    ),
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Confirm new password'),
+      confirmInput,
+    ),
+    el('div', { class: 'wt-modal__actions' }, cancel, submit),
+    errBox,
+    workBox,
+  ]);
+}
+
+// ============================================================
 // Header
 // ============================================================
 
@@ -299,6 +523,11 @@ function renderHeader() {
   const userEl  = el('div', { class: 'wt-header__user' },
     adminBadge,
     el('span', { class: 'wt-header__user-name' }, userInfo),
+    el('button', {
+      class: 'wt-header__changepw',
+      onclick: openChangePasswordModal,
+      title: 'Change your password',
+    }, 'Change password'),
     el('button', { class: 'wt-header__signout', onclick: signOut, title: 'Sign out' }, 'Sign out')
   );
   header.append(dateEl, titleEl, userEl);

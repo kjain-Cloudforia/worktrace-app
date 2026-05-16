@@ -71,6 +71,16 @@
     <section id="wt-error" class="wt-error" hidden></section>
   </main>
 
+  <!--
+    Modal overlay for system dialogs (change-password, etc.). shell.js
+    fills .wt-modal__panel on demand and toggles the `hidden` attribute.
+    Backdrop click + Esc both close the modal.
+  -->
+  <div id="wt-modal" class="wt-modal" hidden>
+    <div class="wt-modal__backdrop" data-wt-close="1"></div>
+    <div class="wt-modal__panel" role="dialog" aria-modal="true"></div>
+  </div>
+
   <!-- module-registry is fetched at runtime so adding a module doesn't require editing index.html -->
   <script type="module" src="shell.js"></script>
 </body>
