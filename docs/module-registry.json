@@ -11,7 +11,7 @@
   ],
   "data_repo": {
     "owner": "kjain-Cloudforia",
-    "name": "worktrace-data",
+    "name": "worktrace-data-kashish",
     "branch": "main",
     "_note": "Where modules fetch their JSON from. Path within = modules/<module_id>/users/<user_id>.json"
   }
