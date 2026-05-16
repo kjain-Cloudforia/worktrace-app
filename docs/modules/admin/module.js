@@ -37,6 +37,7 @@ import {
   unlockEscrowRecord,
   encryptSecret,
   checkPasswordStrength,
+  normalizeRecoveryCode,
 } from '../../auth/auth.js';
 
 // ---- local helpers (kept private to this module) -----------------------
@@ -168,7 +169,8 @@ function fmtTs(iso) {
  * their next sign-in via the existing Change Password modal.
  */
 function openResetPasswordModal(targetUser, ctx, refreshRoster) {
-  const adminPwInput = el('input', { type: 'password', autocomplete: 'current-password' });
+  const codeInput    = el('input', { type: 'text', autocomplete: 'off',
+                                     placeholder: 'XXXX-XXXX-XXXX-XXXX-XXXX-XXXX' });
   const newPwInput   = el('input', { type: 'password', autocomplete: 'new-password' });
   const confirmInput = el('input', { type: 'password', autocomplete: 'new-password' });
   const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
@@ -178,12 +180,20 @@ function openResetPasswordModal(targetUser, ctx, refreshRoster) {
 
   async function attempt() {
     errBox.hidden = true;
-    const adminPw = adminPwInput.value;
+    const code    = codeInput.value;
     const newPw   = newPwInput.value;
     const confirm = confirmInput.value;
 
-    if (!adminPw || !newPw || !confirm) {
+    if (!code || !newPw || !confirm) {
       errBox.textContent = 'Fill in all three fields.';
+      errBox.hidden = false;
+      return;
+    }
+    try {
+      normalizeRecoveryCode(code); // throws on bad shape
+    } catch {
+      errBox.textContent =
+        'Recovery code must be 24 Crockford characters (hyphens / spaces / lowercase are OK).';
       errBox.hidden = false;
       return;
     }
@@ -219,12 +229,15 @@ function openResetPasswordModal(targetUser, ctx, refreshRoster) {
         return;
       }
 
-      // 2. Decrypt escrow with admin's password → user's PAT plaintext.
+      // 2. Decrypt escrow with the recovery code → user's PAT plaintext.
+      //    Escrow is intentionally encrypted under the recovery code (not
+      //    the admin password) so escrow files survive admin password
+      //    changes and recoveries without needing a re-key pass.
       let userPat;
       try {
-        userPat = await unlockEscrowRecord(escrow, adminPw);
+        userPat = await unlockEscrowRecord(escrow, code);
       } catch (e) {
-        errBox.textContent = 'Admin password is incorrect.';
+        errBox.textContent = 'Recovery code is incorrect (or escrow was built under a different code).';
         errBox.hidden = false;
         return;
       }
@@ -271,10 +284,11 @@ function openResetPasswordModal(targetUser, ctx, refreshRoster) {
       `Set a temporary password for ${targetUser.display_name}. ` +
       `${targetUser.display_name} will sign in with it and should rotate it immediately via Change password.`),
     el('div', { class: 'wt-modal__field' },
-      el('label', {}, 'Your (admin) password'),
-      adminPwInput,
+      el('label', {}, 'Recovery code'),
+      codeInput,
       el('p', { class: 'wt-modal__hint' },
-        'Used to unlock the escrow file. Never sent anywhere.')
+        'The 24-char admin recovery code (stored in 1Password / paper). ' +
+        'Used to unlock the escrow — never sent anywhere.')
     ),
     el('div', { class: 'wt-modal__field' },
       el('label', {}, `New temporary password for @${targetUser.username}`),

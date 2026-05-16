@@ -38,8 +38,6 @@ import {
   unlockRecoveryRecord,
   normalizeRecoveryCode,
   encryptSecret,
-  buildEscrowRecord,
-  unlockEscrowRecord,
 } from './auth/auth.js';
 
 // ============================================================
@@ -592,72 +590,6 @@ async function commitToAuthRepo(path, contentString, commitMessage) {
   return res.json();
 }
 
-/**
- * List + re-key every escrow/*.json file in worktrace-auth so they stay
- * unlockable by the admin's NEW password. Called from the Change Password
- * flow when admin changes their own password (escrows are encrypted under
- * admin's password, so they'd otherwise become unreadable + reset-user
- * would silently break).
- *
- * Each file is re-fetched, decrypted with the old admin password, the
- * embedded user-PAT extracted, re-encrypted under the new admin password,
- * and committed back. We do this serially (not parallel) to keep the
- * GitHub API happy on small teams and to give clear progress feedback.
- *
- * Returns the count of files rekeyed. Throws on any failure — the caller
- * is responsible for telling the admin "your password is changed but
- * escrow rekey failed, run scripts/build_recovery_artifacts.py".
- */
-async function rebuildAllEscrowFiles(oldAdminPw, newAdminPw, progressCallback) {
-  // 1. List every file under escrow/ via the Contents API.
-  const listUrl = `${AUTH_API}/escrow`;
-  const listRes = await fetch(listUrl, { cache: 'no-store' });
-  if (listRes.status === 404) {
-    // No escrow directory exists yet — nothing to rebuild.
-    return 0;
-  }
-  if (!listRes.ok) {
-    throw new Error(`Failed to list escrow files (HTTP ${listRes.status})`);
-  }
-  const files = (await listRes.json())
-    .filter(f => f.type === 'file' && f.name.endsWith('.json'));
-
-  // 2. For each escrow file: fetch, decrypt with old pw, re-encrypt under new pw, commit.
-  let count = 0;
-  for (const f of files) {
-    if (typeof progressCallback === 'function') {
-      progressCallback(`Re-keying escrow for ${f.name.replace(/\.json$/, '')} (${count + 1}/${files.length})…`);
-    }
-    const contentUrl = `${AUTH_API}/escrow/${encodeURIComponent(f.name)}`;
-    const r = await fetch(contentUrl, {
-      headers: { 'Accept': 'application/vnd.github.v3.raw' },
-      cache: 'no-store',
-    });
-    if (!r.ok) throw new Error(`Failed to fetch escrow/${f.name} (HTTP ${r.status})`);
-    const escrow = await r.json();
-
-    let userPat;
-    try {
-      userPat = await unlockEscrowRecord(escrow, oldAdminPw);
-    } catch {
-      throw new Error(`Old admin password doesn't unlock escrow/${f.name}. ` +
-                      `It may have been built under a different password — run scripts/build_recovery_artifacts.py.`);
-    }
-
-    const username = escrow.username || f.name.replace(/\.json$/, '');
-    const newEscrow = await buildEscrowRecord({
-      username, pat: userPat, adminPassword: newAdminPw,
-    });
-    await commitToAuthRepo(
-      `escrow/${f.name}`,
-      JSON.stringify(newEscrow, null, 2) + '\n',
-      `Rekey escrow for ${username} (admin password changed)`,
-    );
-    count++;
-  }
-  return count;
-}
-
 // ============================================================
 // Change-password flow
 // ============================================================
@@ -737,30 +669,9 @@ function openChangePasswordModal() {
         `Password change for ${SHELL_STATE.currentUser.username}`,
       );
 
-      // 3b. If the current user is an admin, every escrow/<u>.json was
-      //     encrypted under their OLD password — those files would be
-      //     unrecoverable after this point. Re-key them all under the
-      //     new password so the reset-user flow keeps working.
-      //     Non-admins don't touch escrow files: their password only
-      //     guards their own users/<u>.json.
-      if (SHELL_STATE.currentUser.is_admin) {
-        try {
-          const n = await rebuildAllEscrowFiles(
-            oldPw, newPw,
-            (msg) => { workBox.textContent = msg; },
-          );
-          if (n > 0) {
-            workBox.textContent = `Re-keyed ${n} escrow file${n === 1 ? '' : 's'} under new admin password.`;
-          }
-        } catch (escrowErr) {
-          // Don't roll back the admin-password change — it already
-          // landed. Surface a follow-up action instead.
-          errBox.textContent =
-            'Admin password changed, but escrow re-key failed: ' + escrowErr.message +
-            ' — run scripts/build_recovery_artifacts.py to repair before resetting any user.';
-          errBox.hidden = false;
-        }
-      }
+      // Note: escrow files are intentionally encrypted under the admin
+      // recovery code (not the admin password), so they survive password
+      // changes and recoveries without any re-key. Nothing to do here.
 
       // 4. Show success + force re-login. We don't try to silently
       //    keep the session — the cleanest UX is "sign in again with
