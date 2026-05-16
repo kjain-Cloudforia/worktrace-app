@@ -149,13 +149,29 @@ async function ghFetchFromRepo(ownerRepo, path) {
 // ============================================================
 
 /**
- * Fetch the auth file for a given username from worktrace-auth (public raw URL).
+ * Fetch the auth file for a given username from worktrace-auth.
+ *
+ * Important: GitHub's `raw.githubusercontent.com` is served via a CDN
+ * that can return a stale copy for several minutes after a write. The
+ * dashboard relies on always getting the *current* ciphertext, otherwise:
+ *  - After a password change, sign-in with the new password would fail
+ *    (CDN returns the pre-rekey blob; new password doesn't decrypt it).
+ *  - After a password change, sign-in with the old password would still
+ *    work (CDN's stale blob is the pre-rekey one).
+ *
+ * Two defenses, both applied:
+ *  1. A per-request `?_=<random>` query string so the CDN treats every
+ *     fetch as a fresh URL (most CDNs don't cache by querystring).
+ *  2. `cache: 'no-store'` to bypass the browser's HTTP cache.
+ *
  * Returns the encrypted user record JSON, or throws on 404 / parse error.
  */
 async function fetchAuthRecord(username) {
-  const res = await fetch(`${AUTH_RAW}/${encodeURIComponent(username)}.json`, {
-    cache: 'no-store',
-  });
+  const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+  const res = await fetch(
+    `${AUTH_RAW}/${encodeURIComponent(username)}.json${buster}`,
+    { cache: 'no-store' },
+  );
   if (res.status === 404) {
     const err = new Error('No such user.');
     err.code = 'USER_NOT_FOUND';
