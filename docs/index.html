@@ -30,27 +30,37 @@
         <h1>WorkTrace</h1>
         <p class="wt-login__tagline">AI-powered developer productivity platform.</p>
 
-        <label class="wt-login__label" for="wt-pat-input">
-          Paste a GitHub fine-grained PAT with <strong>Contents: Read</strong> on
-          <code>kjain-Cloudforia/worktrace-data</code>:
-        </label>
+        <label class="wt-login__label" for="wt-username-input">Username</label>
         <input
-          id="wt-pat-input"
+          id="wt-username-input"
+          type="text"
+          class="wt-login__input"
+          placeholder="e.g. kashish"
+          autocomplete="username"
+          autocapitalize="none"
+          spellcheck="false" />
+
+        <label class="wt-login__label" for="wt-password-input" style="margin-top: 14px;">Password</label>
+        <input
+          id="wt-password-input"
           type="password"
           class="wt-login__input"
-          placeholder="github_pat_…"
-          autocomplete="off"
-          spellcheck="false" />
+          placeholder="••••••••••••"
+          autocomplete="current-password" />
 
         <button id="wt-login-submit" class="wt-login__submit" type="button">
           Sign in
         </button>
 
         <p class="wt-login__hint">
-          Your token stays in your browser only (localStorage). It is never sent anywhere
-          except <code>api.github.com</code>. <a href="https://github.com/settings/personal-access-tokens/new" target="_blank" rel="noopener">Generate one →</a>
+          Your password is never sent anywhere — it stays in your browser and is used
+          locally to decrypt your credentials from
+          <a href="https://github.com/kjain-Cloudforia/worktrace-auth" target="_blank" rel="noopener">worktrace-auth</a>.
+          After sign-in, a short-lived access token is cached in your browser session only
+          (sessionStorage, cleared when you close the tab).
         </p>
         <p class="wt-login__error" id="wt-login-error" hidden></p>
+        <p class="wt-login__working" id="wt-login-working" hidden>Signing in… (deriving key — ~2s)</p>
       </div>
     </section>
 

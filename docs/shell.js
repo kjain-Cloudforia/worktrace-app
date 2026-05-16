@@ -2,60 +2,61 @@
  * shell.js — WorkTrace dashboard shell.
  *
  * Responsibilities:
- *   1. Auth — first visit prompts for a fine-grained GitHub PAT scoped to
- *      Contents:Read on the private worktrace-data repo. Token cached in
- *      localStorage (per-browser, per-device). Never sent anywhere except
- *      api.github.com directly from the user's browser.
- *   2. Identity — once authed, fetch users/registry.json from the data repo
- *      to know who's on the platform. We don't have a "logged-in user"
- *      concept (the GH PAT belongs to whoever pasted it); the user picks
- *      themselves from the registry on first visit and that choice is
- *      cached in localStorage too.
- *   3. Module loading — read module-registry.json (next to this file),
- *      dynamic-import each enabled module's module.js, call its lifecycle
- *      hooks (init/renderTile/renderDetail) with a `shell` services object.
- *   4. Routing — tile-grid view ↔ detail view. URL hash: #/ or #/<moduleId>.
+ *   1. Auth — username/password sign-in. The dashboard fetches
+ *      worktrace-auth/users/<username>.json (public, encrypted blob),
+ *      derives an AES-GCM key from the password (PBKDF2 600k iters), and
+ *      decrypts the embedded PAT. PAT is cached in sessionStorage so it
+ *      stays for the duration of the browser tab and clears on close.
+ *   2. Identity — `is_admin` flag on the auth file gates admin features;
+ *      `data_repo` field points at the user's per-user data repo.
+ *   3. Module loading — read module-registry.json, dynamic-import each
+ *      enabled module's module.js, call its renderTile / renderDetail.
+ *   4. Routing — tile-grid view ↔ detail view via URL hash: #/ or #/<id>.
  *   5. Header — live local date/time, platform title, current user, sign-out.
  *
  * Module contract (each module's default export):
  *   {
- *     id: string,               // matches the registry entry
+ *     id: string,
  *     displayName: string,
  *     description?: string,
  *     schemaVersion: number,
- *     dataPath?: string,        // optional override of "modules/<id>/users"
- *     stylesheet?: string,      // optional path to module.css (relative to module.js)
- *     async init?(shell): void, // one-time setup; can stash state on `this`
- *     async renderTile(container, ctx): void,    // ctx = { shell, currentUser, allUsers, fetchData }
+ *     dataPath?: string,        // path within the data repo (default: modules/<id>/data.json)
+ *     stylesheet?: string,
+ *     requiresAdmin?: boolean,  // true → module loads only for is_admin users
+ *     async init?(shell): void,
+ *     async renderTile(container, ctx): void,
  *     async renderDetail(container, ctx): void,
  *   }
  *
- * Vanilla JS, no framework, no build step. Targets modern evergreen
- * browsers (top-level await, dynamic import, ES2020+).
+ * Vanilla JS, no framework, no build step. Targets modern evergreen browsers.
  */
+
+import { unlockUserRecord } from './auth/auth.js';
 
 // ============================================================
 // Config + constants
 // ============================================================
 
-const LS = {
-  pat:       'wt:gh_pat',
-  userId:    'wt:user_id',     // the user_id from users/registry.json this browser is viewing as
+const SS = {
+  pat:      'wt:gh_pat_v2',     // PAT cached in sessionStorage (cleared on tab close)
+  username: 'wt:username',
+  // Note: NOT localStorage — sessionStorage clears when the browser tab
+  // closes, which is the right blast radius for an auto-decrypted credential.
 };
 
 const GITHUB_API = 'https://api.github.com';
-const REGISTRY_PATH = 'users/registry.json';
+const AUTH_RAW   = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/users';
 
 let SHELL_STATE = {
-  registry: null,             // module-registry.json (loaded once at boot)
-  dataRegistry: null,         // users/registry.json from the data repo
-  modules: [],                // [{ definition, container }, ...] in load order
-  currentUser: null,          // entry from data registry, e.g. { user_id, display_name, ... }
+  registry: null,        // module-registry.json (loaded once at boot)
+  currentUser: null,     // { username, display_name, data_repo, is_admin, managed_repos? }
+  pat: null,             // in-memory; mirrored to sessionStorage for tab persistence
+  modules: [],           // [{ definition, shellApi }, ...] in load order
   headerTimer: null,
 };
 
 // ============================================================
-// DOM helpers (no jQuery, no nothing)
+// DOM helpers
 // ============================================================
 
 const $ = (sel) => document.querySelector(sel);
@@ -85,33 +86,32 @@ function show(sel) { $(sel).hidden = false; }
 function hide(sel) { $(sel).hidden = true; }
 
 // ============================================================
-// GitHub API helpers
+// GitHub API — fetch JSON from the current user's data repo
 // ============================================================
 
 /**
- * Fetch a JSON file from the private data repo using the cached PAT.
- *
- * @param {string} path  Path within the repo (e.g., 'users/registry.json').
- * @returns {Promise<any>} Parsed JSON.
- * @throws {Error} On 401 (bad token), 404 (path missing), other HTTP errors.
+ * Fetch a JSON file from the current user's data_repo using their decrypted PAT.
+ * The path is repo-relative (e.g. 'modules/timesheet/data.json').
  */
-async function ghFetchJSON(path) {
-  const reg = SHELL_STATE.registry.data_repo;
-  const url = `${GITHUB_API}/repos/${reg.owner}/${reg.name}/contents/${path}?ref=${reg.branch}`;
-  const pat = localStorage.getItem(LS.pat);
-  if (!pat) throw new Error('No PAT in localStorage — please sign in.');
-
+async function ghFetchFromCurrentRepo(path) {
+  if (!SHELL_STATE.currentUser?.data_repo) {
+    throw new Error('No data repo configured for the current user.');
+  }
+  if (!SHELL_STATE.pat) throw new Error('Not signed in.');
+  const url = `${GITHUB_API}/repos/${SHELL_STATE.currentUser.data_repo}/contents/${path}?ref=main`;
   const res = await fetch(url, {
     headers: {
-      'Authorization': `Bearer ${pat}`,
+      'Authorization': `Bearer ${SHELL_STATE.pat}`,
       'Accept': 'application/vnd.github.raw',
     },
   });
   if (res.status === 401 || res.status === 403) {
-    throw new Error('Authentication failed. Your PAT may be invalid or revoked. Please sign in again.');
+    throw new Error('Your session expired or the token is no longer valid. Please sign in again.');
   }
   if (res.status === 404) {
-    throw new Error(`File not found at ${path}.`);
+    const err = new Error(`File not found at ${path}.`);
+    err.code = 'NOT_FOUND';
+    throw err;
   }
   if (!res.ok) {
     throw new Error(`GitHub API returned ${res.status}: ${await res.text()}`);
@@ -120,136 +120,163 @@ async function ghFetchJSON(path) {
 }
 
 /**
- * List directory contents in the data repo (uses GitHub's contents API
- * which returns an array for directories). Returns filename → path.
+ * Fetch a JSON file from an arbitrary repo (for admin cross-repo views).
+ * Caller specifies the `owner/repo` string and the path.
  */
-async function ghListDir(path) {
-  const reg = SHELL_STATE.registry.data_repo;
-  const url = `${GITHUB_API}/repos/${reg.owner}/${reg.name}/contents/${path}?ref=${reg.branch}`;
-  const pat = localStorage.getItem(LS.pat);
+async function ghFetchFromRepo(ownerRepo, path) {
+  if (!SHELL_STATE.pat) throw new Error('Not signed in.');
+  const url = `${GITHUB_API}/repos/${ownerRepo}/contents/${path}?ref=main`;
   const res = await fetch(url, {
     headers: {
-      'Authorization': `Bearer ${pat}`,
-      'Accept': 'application/vnd.github+json',
+      'Authorization': `Bearer ${SHELL_STATE.pat}`,
+      'Accept': 'application/vnd.github.raw',
     },
   });
-  if (!res.ok) throw new Error(`Failed to list ${path}: HTTP ${res.status}`);
-  const items = await res.json();
-  return items.filter(i => i.type === 'file');
+  if (!res.ok) {
+    const err = new Error(`Fetch ${ownerRepo}/${path} → HTTP ${res.status}`);
+    err.code = res.status === 404 ? 'NOT_FOUND' : 'API_ERROR';
+    throw err;
+  }
+  return res.json();
 }
 
 // ============================================================
 // Auth flow
 // ============================================================
 
-async function tryAuth(pat) {
-  // Validate by hitting the registry path. If 401 → bad token. If 404 → repo
-  // exists but registry not in place yet (unusual). If 200 → good.
-  const reg = SHELL_STATE.registry.data_repo;
-  const url = `${GITHUB_API}/repos/${reg.owner}/${reg.name}/contents/${REGISTRY_PATH}?ref=${reg.branch}`;
-  const res = await fetch(url, {
-    headers: {
-      'Authorization': `Bearer ${pat}`,
-      'Accept': 'application/vnd.github.raw',
-    },
+/**
+ * Fetch the auth file for a given username from worktrace-auth (public raw URL).
+ * Returns the encrypted user record JSON, or throws on 404 / parse error.
+ */
+async function fetchAuthRecord(username) {
+  const res = await fetch(`${AUTH_RAW}/${encodeURIComponent(username)}.json`, {
+    cache: 'no-store',
   });
-  if (res.status === 401 || res.status === 403) {
-    throw new Error('Invalid token, or your PAT doesn\'t have Contents:Read on this repo.');
+  if (res.status === 404) {
+    const err = new Error('No such user.');
+    err.code = 'USER_NOT_FOUND';
+    throw err;
   }
-  if (!res.ok) {
-    throw new Error(`Validation request failed: HTTP ${res.status}.`);
-  }
-  return res.json(); // the parsed registry
+  if (!res.ok) throw new Error(`Failed to fetch auth record: HTTP ${res.status}`);
+  return res.json();
 }
 
-function bindLoginForm() {
-  const input = $('#wt-pat-input');
-  const submit = $('#wt-login-submit');
-  const errBox = $('#wt-login-error');
+/**
+ * Run the full sign-in dance:
+ *   - fetch the user's auth file
+ *   - decrypt under the password (AES-GCM throws on wrong password)
+ *   - extract the PAT + public fields
+ *   - sanity-check the PAT works against the user's data_repo
+ *   - cache in sessionStorage and SHELL_STATE
+ */
+async function signInWithCredentials(username, password) {
+  username = (username || '').trim().toLowerCase();
+  if (!username) throw new Error('Enter your username.');
+  if (!password) throw new Error('Enter your password.');
 
-  async function doLogin() {
-    const pat = input.value.trim();
-    if (!pat) return;
+  const record = await fetchAuthRecord(username);
+  let pat, publicFields;
+  try {
+    const unlocked = await unlockUserRecord(record, password);
+    pat = unlocked.pat;
+    publicFields = unlocked.record;
+  } catch (_) {
+    // Don't leak whether the user exists vs the password is wrong.
+    const err = new Error('Incorrect username or password.');
+    err.code = 'BAD_PASSWORD';
+    throw err;
+  }
+
+  // Sanity-check: the PAT must be able to reach the user's data repo
+  // (or, for an admin record with data_repo=null, the auth repo itself).
+  const probeRepo = publicFields.data_repo || 'kjain-Cloudforia/worktrace-auth';
+  const probe = await fetch(
+    `${GITHUB_API}/repos/${probeRepo}`,
+    { headers: { 'Authorization': `Bearer ${pat}` } },
+  );
+  if (probe.status === 401 || probe.status === 403) {
+    throw new Error('Your stored credential has been revoked. Contact the admin to re-issue it.');
+  }
+  if (!probe.ok) {
+    throw new Error(`Couldn't reach your data repository (HTTP ${probe.status}).`);
+  }
+
+  SHELL_STATE.currentUser = publicFields;
+  SHELL_STATE.pat = pat;
+  sessionStorage.setItem(SS.pat, pat);
+  sessionStorage.setItem(SS.username, username);
+}
+
+function signOut() {
+  sessionStorage.removeItem(SS.pat);
+  sessionStorage.removeItem(SS.username);
+  SHELL_STATE.pat = null;
+  SHELL_STATE.currentUser = null;
+  if (SHELL_STATE.headerTimer) clearInterval(SHELL_STATE.headerTimer);
+  location.reload();
+}
+
+/**
+ * Try to resume a previous session from sessionStorage.
+ * Returns true on success, false on failure (e.g. token expired/revoked).
+ */
+async function trySessionResume() {
+  const pat = sessionStorage.getItem(SS.pat);
+  const username = sessionStorage.getItem(SS.username);
+  if (!pat || !username) return false;
+
+  try {
+    // Re-fetch the auth file's public fields (so display_name etc. stay
+    // current if admin updated the record between tabs).
+    const record = await fetchAuthRecord(username);
+    const { kdf, iterations, salt, iv, ciphertext, ...publicFields } = record;
+    SHELL_STATE.currentUser = publicFields;
+    SHELL_STATE.pat = pat;
+    return true;
+  } catch (_) {
+    sessionStorage.removeItem(SS.pat);
+    sessionStorage.removeItem(SS.username);
+    return false;
+  }
+}
+
+// ============================================================
+// Login form binding
+// ============================================================
+
+function bindLoginForm() {
+  const userInput = $('#wt-username-input');
+  const pwInput   = $('#wt-password-input');
+  const submit    = $('#wt-login-submit');
+  const errBox    = $('#wt-login-error');
+  const workBox   = $('#wt-login-working');
+
+  async function attempt() {
+    const username = userInput.value;
+    const password = pwInput.value;
     errBox.hidden = true;
     submit.disabled = true;
     submit.textContent = 'Signing in…';
+    workBox.hidden = false;
     try {
-      const registry = await tryAuth(pat);
-      // Auth succeeded — persist and proceed.
-      localStorage.setItem(LS.pat, pat);
-      SHELL_STATE.dataRegistry = registry;
+      await signInWithCredentials(username, password);
+      // Success — switch UI to the app
+      hide('#wt-login');
+      pwInput.value = ''; // don't leave password in the DOM
       await afterAuth();
     } catch (err) {
-      errBox.textContent = err.message;
+      errBox.textContent = err.message || 'Sign-in failed.';
       errBox.hidden = false;
     } finally {
       submit.disabled = false;
       submit.textContent = 'Sign in';
+      workBox.hidden = true;
     }
   }
 
-  submit.addEventListener('click', doLogin);
-  input.addEventListener('keydown', (e) => { if (e.key === 'Enter') doLogin(); });
-}
-
-function signOut() {
-  localStorage.removeItem(LS.pat);
-  localStorage.removeItem(LS.userId);
-  location.reload();
-}
-
-// ============================================================
-// User picker — first visit (or when stored user_id no longer exists)
-// ============================================================
-
-async function chooseUser() {
-  const users = SHELL_STATE.dataRegistry.users.filter(u => u.active);
-  if (users.length === 1) {
-    // Trivial case — only one user. Pick them.
-    SHELL_STATE.currentUser = users[0];
-    localStorage.setItem(LS.userId, users[0].user_id);
-    return;
-  }
-  const cachedId = localStorage.getItem(LS.userId);
-  if (cachedId) {
-    const found = users.find(u => u.user_id === cachedId);
-    if (found) {
-      SHELL_STATE.currentUser = found;
-      return;
-    }
-  }
-  // Prompt: render an inline picker into #wt-app and wait for the click.
-  show('#wt-app');
-  const app = $('#wt-app');
-  app.innerHTML = '';
-  app.appendChild(
-    el('div', { class: 'wt-detail' },
-      el('h2', { class: 'wt-detail__title' }, 'Who are you?'),
-      el('p', { class: 'wt-tile__desc' }, 'Pick yourself from the registry. Your choice is remembered per browser.'),
-      el('div', { class: 'wt-grid', style: 'margin-top: 16px;' },
-        ...users.map(u =>
-          el('div', {
-              class: 'wt-tile',
-              onclick: () => {
-                SHELL_STATE.currentUser = u;
-                localStorage.setItem(LS.userId, u.user_id);
-                renderShell();
-              },
-            },
-            el('h3', { class: 'wt-tile__name' }, u.display_name),
-            el('p', { class: 'wt-tile__desc' }, `@${u.github_login}`),
-            el('p', { class: 'wt-tile__desc', style: 'margin-top: 12px;' },
-              `Modules: ${(u.modules_enabled || []).join(', ') || '(none)'}`)
-          )
-        )
-      )
-    )
-  );
-  // Wait — chooseUser is called from afterAuth; the click handler reruns renderShell
-  // which calls chooseUser again (now with a cached id), which returns immediately.
-  // We throw a special sentinel to unwind the call stack so afterAuth doesn't try
-  // to render the grid before the user picks.
-  throw new Error('__pending_user_choice__');
+  submit.addEventListener('click', attempt);
+  pwInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') attempt(); });
+  userInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') pwInput.focus(); });
 }
 
 // ============================================================
@@ -259,17 +286,21 @@ async function chooseUser() {
 function renderHeader() {
   const header = $('#wt-header');
   header.innerHTML = '';
-  const dateEl = el('div', { class: 'wt-header__date' });
+  const dateEl  = el('div', { class: 'wt-header__date' });
   const titleEl = el('div', { class: 'wt-header__title', html:
     '<span class="wt-accent">WorkTrace</span> — AI-Powered Developer Productivity Platform' });
-  const userEl = el('div', { class: 'wt-header__user' },
-    el('span', { class: 'wt-header__user-name' }, SHELL_STATE.currentUser?.display_name || ''),
+  const userInfo = SHELL_STATE.currentUser?.display_name || SHELL_STATE.currentUser?.username || '';
+  const adminBadge = SHELL_STATE.currentUser?.is_admin
+    ? el('span', { class: 'wt-header__admin-badge', title: 'Admin session' }, 'admin')
+    : null;
+  const userEl  = el('div', { class: 'wt-header__user' },
+    adminBadge,
+    el('span', { class: 'wt-header__user-name' }, userInfo),
     el('button', { class: 'wt-header__signout', onclick: signOut, title: 'Sign out' }, 'Sign out')
   );
   header.append(dateEl, titleEl, userEl);
   show('#wt-header');
 
-  // Live clock — updates every second. Stop the previous timer if any.
   if (SHELL_STATE.headerTimer) clearInterval(SHELL_STATE.headerTimer);
   const tick = () => {
     const now = new Date();
@@ -293,7 +324,12 @@ async function loadModule(moduleEntry) {
     throw new Error(`Module ${moduleEntry.id}: default export missing or id mismatch`);
   }
 
-  // Lazy-load module's stylesheet (if declared)
+  // Admin gating — if a module declares requiresAdmin, hide it for non-admins.
+  if (def.requiresAdmin && !SHELL_STATE.currentUser?.is_admin) {
+    return null;
+  }
+
+  // Lazy-load the module's stylesheet (if declared)
   if (def.stylesheet) {
     const cssId = `wt-module-css--${def.id}`;
     if (!document.getElementById(cssId)) {
@@ -305,29 +341,24 @@ async function loadModule(moduleEntry) {
     }
   }
 
-  // shell services object — modules use this to fetch data.
-  //
-  // Per-user-repo model (Phase 5a+): each user's data repo holds exactly
-  // one user's data, stored at `modules/<id>/data.json`. No per-user
-  // subdirectories. fetchUserData / listAllUserData take a `dataRepoOverride`
-  // arg for admin views that iterate across multiple repos — Phase 5d wires
-  // that up. For non-admin users, the single fetchMyData() is all they need.
+  // Shell services exposed to modules
   const shellApi = {
-    currentUser: SHELL_STATE.currentUser,
-    allUsers: SHELL_STATE.dataRegistry.users.filter(u => u.active),
+    get currentUser() { return SHELL_STATE.currentUser; },
     /** Fetch the current user's data file for this module. */
     async fetchMyData() {
       const dataPath = def.dataPath || `modules/${def.id}/data.json`;
-      return ghFetchJSON(dataPath);
+      return ghFetchFromCurrentRepo(dataPath);
     },
-    /** Fetch a specific user's data file for this module.
-     * In Phase 5a, only one user exists in a given data repo, so this is
-     * functionally equivalent to fetchMyData(). Phase 5d's admin view will
-     * extend this with a `dataRepoOverride` to fetch across user repos. */
-    async fetchUserData(_userId) {
+    /**
+     * Fetch a specific user's data from an explicit `owner/repo`.
+     * Admins use this to view across user repos in Phase 5d.
+     */
+    async fetchUserDataFromRepo(ownerRepo) {
       const dataPath = def.dataPath || `modules/${def.id}/data.json`;
-      return ghFetchJSON(dataPath);
+      return ghFetchFromRepo(ownerRepo, dataPath);
     },
+    /** Raw GitHub API helper for admin operations (Phase 5e). */
+    async ghFetch(ownerRepo, path) { return ghFetchFromRepo(ownerRepo, path); },
   };
 
   if (typeof def.init === 'function') {
@@ -338,9 +369,6 @@ async function loadModule(moduleEntry) {
 
 // ============================================================
 // Routing — hash-based
-// Routes:
-//   #/                 → grid (tile view)
-//   #/<moduleId>       → detail view for one module
 // ============================================================
 
 function currentRoute() {
@@ -369,6 +397,10 @@ async function renderRoute() {
   if (route.name === 'grid') {
     const grid = el('div', { class: 'wt-grid' });
     app.appendChild(grid);
+    if (SHELL_STATE.modules.length === 0) {
+      grid.appendChild(el('p', { class: 'wt-tile__placeholder' }, 'No modules enabled for this account.'));
+      return;
+    }
     for (const m of SHELL_STATE.modules) {
       const tile = el('div', { class: 'wt-tile', onclick: () => go({ name: 'detail', moduleId: m.definition.id }) },
         el('div', { class: 'wt-tile__header' },
@@ -380,7 +412,7 @@ async function renderRoute() {
         )
       );
       grid.appendChild(tile);
-      // Render asynchronously — failures in one tile don't block others.
+      // Tile renders independently — one failure doesn't block others.
       m.definition.renderTile(tile.querySelector('.wt-tile__body'), m.shellApi)
         .catch(err => {
           tile.querySelector('.wt-tile__body').innerHTML = '';
@@ -393,7 +425,7 @@ async function renderRoute() {
   } else if (route.name === 'detail') {
     const m = SHELL_STATE.modules.find(x => x.definition.id === route.moduleId);
     if (!m) {
-      app.appendChild(el('p', { class: 'wt-error' }, `Unknown module: ${route.moduleId}. ` ));
+      app.appendChild(el('p', { class: 'wt-error' }, `Unknown module: ${route.moduleId}.`));
       return;
     }
     const wrap = el('div', { class: 'wt-detail' },
@@ -418,39 +450,32 @@ function renderShell() {
 }
 
 // ============================================================
-// Boot sequence
+// Post-auth setup: load modules then render
 // ============================================================
 
 async function afterAuth() {
-  // We already have SHELL_STATE.dataRegistry from tryAuth(); otherwise refetch.
-  if (!SHELL_STATE.dataRegistry) {
-    SHELL_STATE.dataRegistry = await ghFetchJSON(REGISTRY_PATH);
-  }
-  try {
-    await chooseUser();
-  } catch (err) {
-    if (err.message === '__pending_user_choice__') return;
-    throw err;
-  }
-  // Load all enabled modules from the registry
-  const enabled = SHELL_STATE.registry.modules.filter(m => m.enabled);
+  // Load all enabled modules from the registry, gated by is_admin.
+  const enabled = (SHELL_STATE.registry.modules || []).filter(m => m.enabled);
   SHELL_STATE.modules = [];
   for (const entry of enabled) {
     try {
       const loaded = await loadModule(entry);
-      SHELL_STATE.modules.push(loaded);
+      if (loaded) SHELL_STATE.modules.push(loaded);
     } catch (err) {
       console.error(`Failed to load module ${entry.id}:`, err);
-      // Continue loading others
     }
   }
   renderShell();
 }
 
+// ============================================================
+// Boot sequence
+// ============================================================
+
 async function boot() {
   // 1. Load module-registry.json (always required)
   try {
-    SHELL_STATE.registry = await (await fetch('./module-registry.json')).json();
+    SHELL_STATE.registry = await (await fetch('./module-registry.json', { cache: 'no-store' })).json();
   } catch (err) {
     document.body.innerHTML =
       '<div style="padding:32px;font-family:sans-serif;color:#c0392b;">' +
@@ -459,21 +484,13 @@ async function boot() {
     return;
   }
 
-  // 2. Check for cached PAT — if present, try to auto-sign-in
-  const pat = localStorage.getItem(LS.pat);
-  if (pat) {
-    try {
-      SHELL_STATE.dataRegistry = await tryAuth(pat);
-      await afterAuth();
-      return;
-    } catch (err) {
-      // Bad cached token — fall through to login screen
-      console.warn('Cached PAT failed:', err.message);
-      localStorage.removeItem(LS.pat);
-    }
+  // 2. Try to resume a previous session
+  if (await trySessionResume()) {
+    await afterAuth();
+    return;
   }
 
-  // 3. Show login screen
+  // 3. Show the login form
   bindLoginForm();
   show('#wt-login');
 }
