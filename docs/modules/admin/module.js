@@ -43,6 +43,7 @@ import {
   buildUserRecord,
   buildEscrowRecord,
   validateWorkShift,
+  resolveActiveShift,
 } from '../../auth/auth.js';
 
 // ---- local helpers (kept private to this module) -----------------------
@@ -1133,14 +1134,38 @@ export default {
       const canReset  = !user.is_admin;
       const canRevoke = !user.is_admin;
 
-      // Format work_shift compactly for the card. Records pre-Phase-5j
-      // may lack work_shift — show a placeholder so admin notices and
-      // can fix via the user's own "Edit shift" modal or by rebuilding
-      // the record.
-      const ws = user.work_shift;
-      const shiftText = ws
-        ? `${ws.start}–${ws.end} ${ws.timezone}`
-        : '(shift not set — pre-5j record)';
+      // Resolve the effective shift (handles pending → current promotion
+      // if the scheduled effective_from has already passed). Then check
+      // for a still-future pending change to annotate the card with.
+      const ws = resolveActiveShift(user);
+      let shiftText;
+      let pendingNote = null;
+      if (ws) {
+        shiftText = `${ws.start}–${ws.end} ${ws.timezone}`;
+        // If a pending change is set AND it's still in the future, show
+        // it as a queued annotation. The Edit shift flow defers in-shift
+        // edits, so any teammate mid-shift will fall into this branch.
+        const pending = user.work_shift_pending;
+        if (pending?.effective_from) {
+          const eff = new Date(pending.effective_from);
+          if (!isNaN(eff.getTime()) && eff > new Date()) {
+            // Render the date in the *pending* shift's timezone so the
+            // user sees a sensible local time. Compact format.
+            try {
+              const fmt = new Intl.DateTimeFormat(undefined, {
+                timeZone: pending.timezone,
+                month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false,
+              });
+              pendingNote = `→ pending: ${pending.start}–${pending.end} ${pending.timezone} from ${fmt.format(eff)}`;
+            } catch {
+              pendingNote = `→ pending: ${pending.start}–${pending.end} ${pending.timezone}`;
+            }
+          }
+        }
+      } else {
+        // Pre-Phase-5j records — backfilled long ago, but defensive.
+        shiftText = '(shift not set — pre-5j record)';
+      }
 
       return el('div', { class: 'wt-admin-card' },
         el('div', { class: 'wt-admin-card__avatar' }, initials),
@@ -1159,7 +1184,13 @@ export default {
             el('span', {
               class: ws ? 'wt-admin-card__shift' : 'wt-admin-card__shift wt-admin-card__shift--missing',
               title: ws ? 'Work shift + timezone' : 'No work_shift on record — backfill via Edit shift',
-            }, `⏱ ${shiftText}`)
+            }, `⏱ ${shiftText}`),
+            pendingNote
+              ? el('span', {
+                  class: 'wt-admin-card__shift wt-admin-card__shift--pending',
+                  title: 'Scheduled shift change',
+                }, ` ${pendingNote}`)
+              : null
           ),
           el('div', { class: 'wt-admin-card__row' }, statusEl)
         ),

@@ -216,6 +216,13 @@
   font-family: var(--wt-font-sans);
   font-style: italic;
 }
+/* Pending shift annotation — visually distinct from the active shift so
+   admin can see "current → pending" at a glance, but subdued enough not
+   to dominate the card. */
+.wt-admin-card__shift--pending {
+  color: var(--wt-accent);
+  margin-left: 6px;
+}
 
 /* Roster header row — count on the left, Add-user button on the right. */
 .wt-admin-detail__header {

@@ -50,6 +50,22 @@
         }
       }
     },
+    "work_shift_pending": {
+      "type": "object",
+      "description": "A scheduled shift change that hasn't taken effect yet. Phase 5k introduces this so a user (or admin) editing the shift while *currently mid-shift* doesn't re-bucket in-progress work. The new shift is staged here with an `effective_from` timestamp (UTC), and any code reading the user's shift via the resolveActiveShift helper auto-promotes pending → current once now() >= effective_from. Absent when no change is queued.",
+      "required": ["start", "end", "timezone", "effective_from"],
+      "additionalProperties": false,
+      "properties": {
+        "start":    { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+        "end":      { "type": "string", "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$" },
+        "timezone": { "type": "string" },
+        "effective_from": {
+          "type": "string",
+          "format": "date-time",
+          "description": "UTC ISO8601 timestamp at which the pending shift becomes the active one. Set by the Edit Shift flow to the end-of-current-shift moment when the change is queued."
+        }
+      }
+    },
     "kdf": {
       "const": "PBKDF2-HMAC-SHA256",
       "description": "Hard-coded for v1. Future schemas will widen."

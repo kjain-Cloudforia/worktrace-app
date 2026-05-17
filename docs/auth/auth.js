@@ -311,6 +311,165 @@ export function validateWorkShift({ start, end, timezone }) {
   return { start, end, timezone };
 }
 
+// ---- Shift state helpers (Phase 5k — deferred shift changes) ----------
+
+/**
+ * Return the shift that is *currently effective* for a user record. If
+ * the record has a `work_shift_pending` block whose `effective_from`
+ * timestamp has elapsed (in UTC), return that. Otherwise return the
+ * current `work_shift`. Returns null/undefined if neither is set
+ * (e.g. pre-Phase-5j records — defensive).
+ *
+ * This is the read-side helper: any code that needs "what's this
+ * user's shift right now?" should go through this, not access
+ * `record.work_shift` directly. Stale-pending values that haven't
+ * elapsed yet get filtered out automatically.
+ */
+export function resolveActiveShift(record, now = new Date()) {
+  if (!record) return null;
+  const pending = record.work_shift_pending;
+  if (pending?.effective_from) {
+    const effective = new Date(pending.effective_from);
+    if (!isNaN(effective.getTime()) && effective <= now) {
+      // Strip effective_from when returning — callers want a plain
+      // work_shift shape, not the pending-record envelope.
+      const { effective_from, ...shift } = pending;
+      return shift;
+    }
+  }
+  return record.work_shift || null;
+}
+
+/**
+ * Convert an HH:MM string + a calendar date in a given timezone to a
+ * UTC Date object pointing at that wall-clock moment. Works by
+ * constructing an ISO string with the timezone's current offset.
+ *
+ * We can't use `new Date('2026-05-18T14:00:00')` directly because that
+ * interprets the string as local-to-the-browser, not local-to-the-tz.
+ * Instead: build a Date, then format it back through Intl with the
+ * target tz, parse the offset, and re-construct in UTC. Yes, JS makes
+ * this clumsy. There's no `new Date(year, month, day, ..., tz)` API.
+ */
+function wallClockInTzToUTC(year, month, day, hour, minute, tz) {
+  // First pass: assume the wall clock is UTC; this gives us a Date
+  // that, when formatted in `tz`, will reveal the actual offset.
+  const probe = new Date(Date.UTC(year, month - 1, day, hour, minute));
+  // Format the probe in the target tz to learn the offset at that
+  // wall-clock moment. (DST varies through the year.)
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: tz, hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', second: '2-digit',
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(probe).filter(p => p.type !== 'literal').map(p => [p.type, p.value]),
+  );
+  // What does the tz say the time is? If we said "Date.UTC(...,14,0)"
+  // and the tz formatter says "10:30", the tz is UTC+04:30 from our perspective.
+  // The actual UTC moment for "14:00 wall clock in this tz" is therefore
+  // probe + (14:00 - what_tz_says).
+  const tzHour = parseInt(parts.hour === '24' ? '0' : parts.hour, 10);
+  const tzMin  = parseInt(parts.minute, 10);
+  // Difference in minutes: how many minutes is the tz AHEAD of UTC
+  // for the probe moment? (positive for east-of-UTC zones)
+  const offsetMin = (tzHour * 60 + tzMin) - (hour * 60 + minute);
+  // The actual UTC moment is probe - offset.
+  return new Date(probe.getTime() - offsetMin * 60_000);
+}
+
+/** Extract the year/month/day a Date falls on, IN a specific timezone. */
+function calendarDateInTz(date, tz) {
+  const fmt = new Intl.DateTimeFormat('en-CA', {  // en-CA gives YYYY-MM-DD
+    timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(date).filter(p => p.type !== 'literal').map(p => [p.type, p.value]),
+  );
+  return {
+    year: parseInt(parts.year, 10),
+    month: parseInt(parts.month, 10),
+    day: parseInt(parts.day, 10),
+  };
+}
+
+/**
+ * Is `now` currently inside `workShift`'s window (in the shift's tz)?
+ *
+ * Cross-midnight handling: when `end < start`, the shift spans midnight.
+ * Example: 14:00 → 05:00. Times 02:00 (still on yesterday's shift) and
+ * 16:00 (today's shift in progress) are both "inside". Times 06:00 and
+ * 13:00 are "outside".
+ *
+ * For same-day shifts (start < end), it's straightforward containment.
+ */
+export function isInShift(workShift, now = new Date()) {
+  if (!workShift?.start || !workShift?.end || !workShift?.timezone) return false;
+  const [sH, sM] = workShift.start.split(':').map(Number);
+  const [eH, eM] = workShift.end.split(':').map(Number);
+  const startMinutes = sH * 60 + sM;
+  const endMinutes   = eH * 60 + eM;
+
+  // Get current wall-clock time in the shift's timezone.
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: workShift.timezone, hour12: false,
+    hour: '2-digit', minute: '2-digit',
+  });
+  const parts = Object.fromEntries(
+    fmt.formatToParts(now).filter(p => p.type !== 'literal').map(p => [p.type, p.value]),
+  );
+  // Edge: Intl formats midnight as "24" on some browsers/locales.
+  const hour = parseInt(parts.hour === '24' ? '0' : parts.hour, 10);
+  const min  = parseInt(parts.minute, 10);
+  const nowMinutes = hour * 60 + min;
+
+  if (endMinutes > startMinutes) {
+    // Same-day shift (e.g. 09:00 → 17:00).
+    return nowMinutes >= startMinutes && nowMinutes < endMinutes;
+  } else {
+    // Cross-midnight shift (e.g. 14:00 → 05:00).
+    return nowMinutes >= startMinutes || nowMinutes < endMinutes;
+  }
+}
+
+/**
+ * Given a user currently inside `workShift`, compute the UTC ISO
+ * timestamp at which their CURRENT shift will end.
+ *
+ * For a same-day shift, that's "today's end_time in the shift's tz".
+ * For a cross-midnight shift, it depends on which half of the shift
+ * `now` is in:
+ *   - Late half (e.g. 02:00 IST on a 14:00→05:00 shift): end is today's 05:00 IST
+ *   - Early half (e.g. 22:00 IST on a 14:00→05:00 shift): end is tomorrow's 05:00 IST
+ *
+ * Returns an ISO8601 UTC string (matches the schema's date-time format).
+ * Throws if the user is NOT currently in their shift — callers should
+ * check `isInShift()` first.
+ */
+export function computeShiftEndUTC(workShift, now = new Date()) {
+  if (!isInShift(workShift, now)) {
+    throw new Error('User is not currently in their shift; no current-shift-end to compute.');
+  }
+  const [eH, eM] = workShift.end.split(':').map(Number);
+  const today = calendarDateInTz(now, workShift.timezone);
+
+  // First candidate: today's end_time in the shift's tz.
+  const endToday = wallClockInTzToUTC(today.year, today.month, today.day, eH, eM, workShift.timezone);
+
+  // If `endToday` is in the future from `now`, that's our answer
+  // (same-day shifts always hit this; cross-midnight shifts hit this
+  // when we're in the "after midnight" half).
+  if (endToday > now) {
+    return endToday.toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+  // Otherwise we're in the "before midnight" half of a cross-midnight
+  // shift — the relevant end is tomorrow's end_time.
+  const tomorrowProbe = new Date(now.getTime() + 24 * 60 * 60 * 1000);
+  const tomorrow = calendarDateInTz(tomorrowProbe, workShift.timezone);
+  const endTomorrow = wallClockInTzToUTC(tomorrow.year, tomorrow.month, tomorrow.day, eH, eM, workShift.timezone);
+  return endTomorrow.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
 /**
  * Take an existing user record and a (possibly correct) password.
  * On success returns { pat: string, record } where record is the parsed

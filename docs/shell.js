@@ -39,6 +39,9 @@ import {
   normalizeRecoveryCode,
   encryptSecret,
   validateWorkShift,
+  resolveActiveShift,
+  isInShift,
+  computeShiftEndUTC,
 } from './auth/auth.js';
 
 // ============================================================
@@ -930,17 +933,42 @@ function openEditShiftModal() {
 
   ensureTimezoneDatalist();
 
-  const current = SHELL_STATE.currentUser.work_shift || {};
+  // Resolve to the *currently effective* shift (auto-promotes any
+  // pending shift whose effective_from has already passed).
+  const activeShift = resolveActiveShift(SHELL_STATE.currentUser) || {};
+
+  // Pre-flight: is the user currently inside their active shift?
+  // Drives the banner + the in-shift-deferred-save behavior.
+  const inShiftNow = isInShift(activeShift);
+  let scheduledEndDisplay = null;  // for the banner text
+  let scheduledEndUTC     = null;  // for the work_shift_pending write
+  if (inShiftNow) {
+    try {
+      scheduledEndUTC = computeShiftEndUTC(activeShift);
+      // Render the end moment in the shift's own timezone so the user
+      // sees "05:00 IST" not the UTC equivalent.
+      const fmt = new Intl.DateTimeFormat(undefined, {
+        timeZone: activeShift.timezone,
+        weekday: 'short', month: 'short', day: 'numeric',
+        hour: '2-digit', minute: '2-digit', hour12: false,
+      });
+      scheduledEndDisplay = `${fmt.format(new Date(scheduledEndUTC))} ${activeShift.timezone}`;
+    } catch (e) {
+      // Shouldn't happen — isInShift said yes — but guard anyway.
+      console.warn('computeShiftEndUTC failed:', e);
+    }
+  }
+
   const startInput = el('input', {
-    type: 'time', autocomplete: 'off', value: current.start || '',
+    type: 'time', autocomplete: 'off', value: activeShift.start || '',
   });
   const endInput = el('input', {
-    type: 'time', autocomplete: 'off', value: current.end || '',
+    type: 'time', autocomplete: 'off', value: activeShift.end || '',
   });
   const tzInput = el('input', {
     type: 'text', autocomplete: 'off',
     list: 'wt-tz-datalist',
-    value: current.timezone || '',
+    value: activeShift.timezone || '',
     placeholder: 'start typing — e.g. America/Los_Angeles',
   });
 
@@ -948,6 +976,14 @@ function openEditShiftModal() {
   const workBox = el('p', { class: 'wt-modal__working', hidden: true });
   const submit  = el('button', { class: 'wt-modal__submit' }, 'Save');
   const cancel  = el('button', { class: 'wt-modal__cancel' }, 'Cancel');
+
+  // Banner shown when the user is currently mid-shift. Tells them the
+  // change will be deferred to the end of the current shift.
+  const deferredBanner = inShiftNow && scheduledEndDisplay
+    ? el('p', { class: 'wt-modal__working' },
+        `⏸ You're currently in your work shift. This change will take effect at ` +
+        `${scheduledEndDisplay} (when this shift ends). In-progress entries on the active shift stay bucketed under it.`)
+    : null;
 
   async function attempt() {
     errBox.hidden = true;
@@ -976,45 +1012,79 @@ function openEditShiftModal() {
 
     try {
       // Fetch the latest authoritative copy so we don't overwrite
-      // someone else's concurrent change (e.g. admin updated the user's
-      // display_name between when this session loaded and now).
+      // someone else's concurrent change.
       const currentRecord = await fetchAuthRecord(SHELL_STATE.currentUser.username);
 
-      const newRecord = {
-        ...currentRecord,
-        work_shift: workShift,
-        updated_at: new Date().toISOString(),
-      };
+      // Re-check in-shift status against the *fetched* record (in case
+      // anything changed between modal-open and submit). Decision tree:
+      //   • If currently in shift → write work_shift_pending,
+      //     LEAVE work_shift untouched. Current shift continues
+      //     bucketing in-progress entries; new shift kicks in at the
+      //     computed effective_from.
+      //   • If not in shift → write work_shift directly,
+      //     DROP any stale work_shift_pending (it's irrelevant now).
+      const activeNow = resolveActiveShift(currentRecord) || {};
+      const stillInShift = isInShift(activeNow);
+
+      let newRecord;
+      if (stillInShift) {
+        const effectiveFrom = computeShiftEndUTC(activeNow);
+        newRecord = {
+          ...currentRecord,
+          work_shift_pending: { ...workShift, effective_from: effectiveFrom },
+          updated_at: new Date().toISOString(),
+        };
+      } else {
+        // Not in shift — apply immediately. Drop any pending block
+        // (e.g. the user previously queued a change, then changed
+        // their mind and is now editing during a rest window).
+        const { work_shift_pending, ...rest } = currentRecord;
+        newRecord = {
+          ...rest,
+          work_shift: workShift,
+          updated_at: new Date().toISOString(),
+        };
+      }
 
       workBox.textContent = 'Saving to worktrace-auth…';
       await commitToAuthRepo(
         `users/${SHELL_STATE.currentUser.username}.json`,
         JSON.stringify(newRecord, null, 2) + '\n',
-        `Update work_shift for ${SHELL_STATE.currentUser.username}`,
+        stillInShift
+          ? `Queue shift change for ${SHELL_STATE.currentUser.username} (in-shift, deferred)`
+          : `Update work_shift for ${SHELL_STATE.currentUser.username}`,
       );
 
-      // Reflect the change in in-memory state so any module that
-      // re-renders next picks up the new shift without a reload.
-      SHELL_STATE.currentUser.work_shift = workShift;
+      // Reflect the change in in-memory state. We store *both* sides
+      // so resolveActiveShift sees the correct effective shift next
+      // time it's called.
+      if (stillInShift) {
+        SHELL_STATE.currentUser.work_shift_pending = newRecord.work_shift_pending;
+      } else {
+        SHELL_STATE.currentUser.work_shift = workShift;
+        delete SHELL_STATE.currentUser.work_shift_pending;
+      }
 
-      // Replace modal contents with a brief done-state.
+      // Success state — message depends on whether we queued or applied.
       const panel = $('#wt-modal').querySelector('.wt-modal__panel');
       panel.innerHTML = '';
       const doneBtn = el('button', { class: 'wt-modal__submit' }, 'Done');
       doneBtn.addEventListener('click', () => {
         closeModal();
-        // Re-render the route so any tile/detail that uses work_shift
-        // recomputes against the new value.
         renderRoute();
       });
+      const successText = stillInShift
+        ? `Queued — your shift becomes ${workShift.start}–${workShift.end} (${workShift.timezone}) at ${scheduledEndDisplay}.`
+        : `Active now — your shift is ${workShift.start}–${workShift.end} (${workShift.timezone}).`;
       panel.append(
-        el('h2', {}, 'Work shift updated ✓'),
-        el('p', { class: 'wt-modal__success' },
-          `New shift: ${workShift.start}–${workShift.end} (${workShift.timezone}).`),
+        el('h2', {}, stillInShift ? 'Shift change scheduled ✓' : 'Work shift updated ✓'),
+        el('p', { class: 'wt-modal__success' }, successText),
         el('p', { class: 'wt-modal__lead' },
-          'Note: this updates your dashboard view. Your laptop\'s local ' +
-          'config.json controls how dpsync buckets entries — keep them in sync ' +
-          'by editing modules.timesheet.work_hours there too.'),
+          stillInShift
+            ? 'Your in-progress entries will continue to bucket under the current shift until it ends. ' +
+              'After that, dpsync (or the auto-sync at next shift-start) will pull the new values into your laptop\'s config.json.'
+            : 'The auto-sync at your next shift-start will propagate this to your laptop\'s config.json. ' +
+              'If you need it on your laptop immediately, run scripts/sync_pull.py.'),
         el('div', { class: 'wt-modal__actions' }, doneBtn),
       );
     } catch (err) {
@@ -1035,6 +1105,8 @@ function openEditShiftModal() {
     el('p', { class: 'wt-modal__lead' },
       `Set the daily shift window the Timesheet (and any future module) ` +
       `should bucket your entries by. Times are in your local timezone (below).`),
+
+    deferredBanner,
 
     el('div', { class: 'wt-modal__field' },
       el('label', {}, 'Shift start'),
