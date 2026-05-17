@@ -291,15 +291,19 @@ export function validateWorkShift({ start, end, timezone }) {
   if (!timezone || typeof timezone !== 'string') {
     throw new Error('Timezone is required.');
   }
-  // Validate against the browser's IANA list when available — falls back
-  // to a basic shape check if Intl.supportedValuesOf isn't there.
-  if (typeof Intl?.supportedValuesOf === 'function') {
-    const known = Intl.supportedValuesOf('timeZone');
-    if (!known.includes(timezone)) {
-      throw new Error(`Timezone "${timezone}" is not a valid IANA name.`);
-    }
-  } else if (!/^[A-Za-z_]+(\/[A-Za-z_+\-0-9]+)*$/.test(timezone)) {
-    throw new Error(`Timezone "${timezone}" doesn't look like an IANA name.`);
+  // The robust validity test: try to construct an Intl.DateTimeFormat
+  // with the timezone. RangeError → invalid; success → valid.
+  //
+  // We don't use `Intl.supportedValuesOf('timeZone').includes(...)` here:
+  // that returns only each browser's *canonical* name set, which on some
+  // platforms (notably older macOS ICU) excludes popular aliases — e.g.
+  // `Asia/Kolkata` is omitted when the browser treats `Asia/Calcutta` as
+  // canonical. DateTimeFormat accepts both canonical names AND linked
+  // aliases, which is the actual semantic guarantee we want.
+  try {
+    new Intl.DateTimeFormat(undefined, { timeZone: timezone });
+  } catch {
+    throw new Error(`Timezone "${timezone}" is not recognised by your browser.`);
   }
   return { start, end, timezone };
 }

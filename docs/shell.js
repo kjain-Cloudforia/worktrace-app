@@ -874,15 +874,47 @@ function openChangePasswordModal() {
  * Datalist of every IANA timezone the browser knows. Shared by both the
  * shell.js edit-shift modal and the admin module's create-user modal.
  * Lives at #wt-tz-datalist on <body>.
+ *
+ * We start with the browser's canonical list (Intl.supportedValuesOf) and
+ * supplement with popular aliases that some platforms omit. The classic
+ * example is Asia/Kolkata: macOS Safari's ICU treats Asia/Calcutta as
+ * canonical and doesn't surface Kolkata in supportedValuesOf, even though
+ * DateTimeFormat handles both identically. Each supplement is verified
+ * via Intl.DateTimeFormat before being added so we never inject a
+ * timezone the browser would reject at save time.
  */
+const TZ_SUPPLEMENTS = [
+  'Asia/Kolkata',          // canonical for India on most platforms;
+                           // sometimes returned as Asia/Calcutta instead
+  'Asia/Calcutta',         // legacy alias, kept so old records still autocomplete
+  'Asia/Ho_Chi_Minh',      // newer name; sometimes returned as Asia/Saigon
+  'Asia/Saigon',
+  'America/Buenos_Aires',  // pre-2009 alias; canonical now under America/Argentina/
+  'UTC',                   // some browsers list Etc/UTC but not bare UTC
+  'Etc/UTC',
+  'GMT',
+];
+
 function ensureTimezoneDatalist() {
   let dl = document.getElementById('wt-tz-datalist');
   if (dl) return;
   dl = el('datalist', { id: 'wt-tz-datalist' });
-  const zones = typeof Intl?.supportedValuesOf === 'function'
+  const browserZones = typeof Intl?.supportedValuesOf === 'function'
     ? Intl.supportedValuesOf('timeZone')
     : [];
-  for (const tz of zones) dl.appendChild(el('option', { value: tz }));
+  const set = new Set(browserZones);
+  for (const tz of TZ_SUPPLEMENTS) {
+    if (set.has(tz)) continue;
+    try {
+      // Confirm the browser accepts this alias before adding it.
+      // Format-then-check is cheaper than catching exceptions on hot paths,
+      // but constructor-throws is the only way Intl exposes "valid?".
+      new Intl.DateTimeFormat(undefined, { timeZone: tz });
+      set.add(tz);
+    } catch { /* browser doesn't recognise — skip */ }
+  }
+  const final = [...set].sort();
+  for (const tz of final) dl.appendChild(el('option', { value: tz }));
   document.body.appendChild(dl);
 }
 

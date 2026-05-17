@@ -86,15 +86,36 @@ const PW_EYE_OFF_SVG = `
  * type "Asia" and see all Asian timezones, type "Los_" → America/Los_Angeles.
  * The datalist node is shared by id so multiple inputs in the same modal
  * reuse one list (browsers don't mind multiple inputs pointing at it).
+ *
+ * Supplements the browser's canonical list with popular aliases — see
+ * the TZ_SUPPLEMENTS comment in shell.js for the rationale. Asia/Kolkata
+ * is the headline example: macOS Safari omits it from supportedValuesOf
+ * (uses Asia/Calcutta as canonical), but DateTimeFormat accepts both.
  */
+const TZ_SUPPLEMENTS = [
+  'Asia/Kolkata', 'Asia/Calcutta',
+  'Asia/Ho_Chi_Minh', 'Asia/Saigon',
+  'America/Buenos_Aires',
+  'UTC', 'Etc/UTC', 'GMT',
+];
+
 function timezoneDatalist(id = 'wt-tz-datalist') {
   let dl = document.getElementById(id);
   if (dl) return dl;
   dl = el('datalist', { id });
-  const zones = typeof Intl?.supportedValuesOf === 'function'
+  const browserZones = typeof Intl?.supportedValuesOf === 'function'
     ? Intl.supportedValuesOf('timeZone')
     : [];
-  for (const tz of zones) dl.appendChild(el('option', { value: tz }));
+  const set = new Set(browserZones);
+  for (const tz of TZ_SUPPLEMENTS) {
+    if (set.has(tz)) continue;
+    try {
+      new Intl.DateTimeFormat(undefined, { timeZone: tz });
+      set.add(tz);
+    } catch { /* skip */ }
+  }
+  const final = [...set].sort();
+  for (const tz of final) dl.appendChild(el('option', { value: tz }));
   document.body.appendChild(dl);
   return dl;
 }
