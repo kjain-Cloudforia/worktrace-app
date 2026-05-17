@@ -6,10 +6,15 @@
  * Tile view: shows the user's most recent work-day at a glance — headline +
  * project + count summary. One tile, one user, one day.
  *
- * Detail view: full week-by-week timeline of every entry, with project
- * filtering, day-by-day bullet rendering, and a switcher to view teammates'
- * data (since the private repo is the trust boundary, this is allowed —
- * see worktrace-data/README.md "Privacy model").
+ * Detail view: full timeline of every entry grouped by work-day, newest
+ * first. Lightweight markdown (bold + inline code) is rendered inside
+ * each bullet via bulletToHTML().
+ *
+ * In the per-user-repo model (Phase 5a+), each user only sees their own
+ * data here — there's no teammate picker on this module. Admins view
+ * other users' timesheets via the Admin module's drill-in, which imports
+ * this module's renderDetail with a shimmed ctx (the auth fetch points
+ * at the target user's data repo).
  *
  * Module contract: see ../../shell.js for the lifecycle hook signatures.
  */
@@ -65,8 +70,6 @@ function totalCounts(entries) {
   }
   return sum;
 }
-
-function dateOnly(iso) { return (iso || '').slice(0, 10); }
 
 // ---- Module export ----
 
@@ -195,45 +198,45 @@ export default {
     );
     container.appendChild(summary);
 
-      // Entries — newest first, grouped by date
-      const entries = [...(data.entries || [])].sort((a, b) =>
-        (b.work_date || '').localeCompare(a.work_date || ''));
-      if (entries.length === 0) {
-        container.appendChild(el('p', { class: 'wt-tile__placeholder' },
-          'No entries yet.'));
-        return;
-      }
+    // Entries — newest first, grouped by date
+    const entries = [...(data.entries || [])].sort((a, b) =>
+      (b.work_date || '').localeCompare(a.work_date || ''));
+    if (entries.length === 0) {
+      container.appendChild(el('p', { class: 'wt-tile__placeholder' },
+        'No entries yet.'));
+      return;
+    }
 
-      const byDate = new Map();
-      for (const e of entries) {
-        if (!byDate.has(e.work_date)) byDate.set(e.work_date, []);
-        byDate.get(e.work_date).push(e);
-      }
+    const byDate = new Map();
+    for (const e of entries) {
+      if (!byDate.has(e.work_date)) byDate.set(e.work_date, []);
+      byDate.get(e.work_date).push(e);
+    }
 
-      const timeline = el('div', { class: 'wt-ts-timeline' });
-      for (const [date, dayEntries] of byDate) {
-        const dayBlock = el('div', { class: 'wt-ts-day' },
-          el('h3', { class: 'wt-ts-day__date' }, date),
-          ...dayEntries.map(e =>
-            el('div', { class: 'wt-ts-entry' },
-              el('div', { class: 'wt-ts-entry__project' }, projectLabel(e.project)),
-              el('div', { class: 'wt-ts-entry__headline' }, e.headline || ''),
-              (e.tags || []).length
-                ? el('div', { class: 'wt-ts-entry__tags' },
-                    ...e.tags.map(t => el('span', { class: 'wt-ts-tag' }, t))
+    const timeline = el('div', { class: 'wt-ts-timeline' });
+    for (const [date, dayEntries] of byDate) {
+      const dayBlock = el('div', { class: 'wt-ts-day' },
+        el('h3', { class: 'wt-ts-day__date' }, date),
+        ...dayEntries.map(e =>
+          el('div', { class: 'wt-ts-entry' },
+            el('div', { class: 'wt-ts-entry__project' }, projectLabel(e.project)),
+            el('div', { class: 'wt-ts-entry__headline' }, e.headline || ''),
+            (e.tags || []).length
+              ? el('div', { class: 'wt-ts-entry__tags' },
+                  ...e.tags.map(t => el('span', { class: 'wt-ts-tag' }, t))
+                )
+              : null,
+            (e.bullets || []).length
+              ? el('details', { class: 'wt-ts-entry__bullets' },
+                  el('summary', {}, `Show ${e.bullets.length} bullet${e.bullets.length === 1 ? '' : 's'}`),
+                  el('ul', { class: 'wt-ts-bullets' },
+                    ...e.bullets.map(b => el('li', { html: bulletToHTML(b) }))
                   )
-                : null,
-              (e.bullets || []).length
-                ? el('details', { class: 'wt-ts-entry__bullets' },
-                    el('summary', {}, `Show ${e.bullets.length} bullet${e.bullets.length === 1 ? '' : 's'}`),
-                    el('ul', { class: 'wt-ts-bullets' },
-                      ...e.bullets.map(b => el('li', { html: bulletToHTML(b) }))
-                    )
-                  )
-                : null
-            )
+                )
+              : null
           )
-        );
+        )
+      );
       timeline.appendChild(dayBlock);
     }
     container.appendChild(timeline);

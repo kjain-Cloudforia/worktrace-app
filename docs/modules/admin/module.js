@@ -5,31 +5,32 @@
  * worktrace-auth record has `is_admin: true` — shell.js gates this via
  * the `requiresAdmin` flag on the module export.
  *
- * Tile view: team-wide aggregates — user count, total bullets, deploys,
- * onboarding count. Click to drill.
+ * Tile view: team-wide aggregates — member count, admin count, data-repo count.
  *
  * Detail view has two states (toggled by local UI state, not URL routing):
  *
  *   State A — user roster
  *     Card per user showing display name, GitHub login, data_repo,
- *     active status, last sync, entry count. Two actions per card:
- *       • "View timesheet" — switches into State B for that user
- *       • (Phase 5e) "Edit" / "Revoke" / "Reset password"
+ *     work shift, active status, last sync, entry count. Per-row actions:
+ *       • "View timesheet"   — switches into State B for that user
+ *       • "Reset password"   — recovery-code-driven password reset (Phase 5h)
+ *       • "Revoke"           — deletes the user's auth + escrow files (Phase 5e)
+ *     Plus a "+ Add team member" button at the top (Phase 5e create flow).
  *
  *   State B — viewing a specific user's timesheet
  *     Re-uses the Timesheet module's renderDetail with a shimmed ctx so
  *     the same UI code renders. Back button returns to State A.
  *
  * Data flow:
- *   - Listing users: GET worktrace-auth/users/ (public, no auth needed)
- *     then fetch each users/*.json file individually for the public
- *     fields. The ciphertext is included in the response but ignored —
- *     we never have decrypted PATs for other users.
+ *   - Listing users: GET worktrace-auth/users/ via the Contents API
+ *     (public — no PAT needed for the listing). Then fetch each
+ *     users/*.json individually for public fields. The ciphertext is
+ *     present in the response but ignored — we never have decrypted
+ *     PATs for other users.
  *   - Fetching a user's timesheet data: GET <their_data_repo>/modules/
- *     timesheet/data.json using THE ADMIN'S PAT (the one decrypted
- *     during admin sign-in). Admin's PAT must have Read access to all
- *     data repos that admin can govern — managed_repos in admin.json
- *     is the source of truth for which repos that is.
+ *     timesheet/data.json using THE ADMIN'S PAT (decrypted at sign-in).
+ *     Admin's PAT has Read access to every worktrace-data-* repo because
+ *     the org owns them.
  */
 
 import timesheetModule from '../timesheet/module.js';
@@ -148,8 +149,7 @@ function passwordField(attrs = {}) {
 // caches by path and can serve stale records for minutes after a write, which
 // would cause spurious "wrong password" errors after a reset or rekey.
 const AUTH_API_BASE  = 'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents';
-const AUTH_API       = `${AUTH_API_BASE}/users`;        // listing endpoint
-const AUTH_USERS_API = `${AUTH_API_BASE}/users`;        // per-file fetches
+const AUTH_USERS_API = `${AUTH_API_BASE}/users`;   // both listing + per-file fetches
 const ESCROW_API     = `${AUTH_API_BASE}/escrow`;
 
 /**
@@ -157,7 +157,7 @@ const ESCROW_API     = `${AUTH_API_BASE}/escrow`;
  * The repo is public so this requires no auth.
  */
 async function listAllAuthFiles() {
-  const res = await fetch(AUTH_API, { cache: 'no-store' });
+  const res = await fetch(AUTH_USERS_API, { cache: 'no-store' });
   if (!res.ok) throw new Error(`Failed to list users (HTTP ${res.status})`);
   const items = await res.json();
   return items.filter(f => f.type === 'file' && f.name.endsWith('.json'));
@@ -462,7 +462,7 @@ function openCreateUserModal(ctx, refreshRoster) {
       );
 
       // ---- Success state ------------------------------------------
-      renderCreateSuccess({ username, display, initialPassword: initPw }, refreshRoster);
+      renderCreateSuccess({ username, display, initialPassword: initPw }, ctx, refreshRoster);
     } catch (err) {
       errBox.textContent = `Create failed: ${err.message || err}`;
       errBox.hidden = false;
@@ -548,7 +548,7 @@ function openCreateUserModal(ctx, refreshRoster) {
  * Success state for the create-user flow. Shows the initial password
  * with a copy button so admin can hand it off out-of-band.
  */
-function renderCreateSuccess({ username, display, initialPassword }, refreshRoster) {
+function renderCreateSuccess({ username, display, initialPassword }, ctx, refreshRoster) {
   const panel = document.querySelector('#wt-modal .wt-modal__panel');
   panel.innerHTML = '';
 
@@ -573,7 +573,9 @@ function renderCreateSuccess({ username, display, initialPassword }, refreshRost
 
   const doneBtn = el('button', { class: 'wt-modal__submit' }, 'Done');
   doneBtn.addEventListener('click', () => {
-    document.querySelector('#wt-modal').setAttribute('hidden', '');
+    // Use the shell's closeModal so the Esc handler gets unregistered too —
+    // direct hidden=true would leak the listener.
+    ctx.closeModal();
     if (typeof refreshRoster === 'function') refreshRoster();
   });
 
@@ -805,7 +807,7 @@ function openResetPasswordModal(targetUser, ctx, refreshRoster) {
 
       // Success — replace the modal contents with a "communicate this" panel
       // showing the new temp password and a copy-to-clipboard button.
-      renderResetSuccess(targetUser, newPw, refreshRoster);
+      renderResetSuccess(targetUser, newPw, ctx, refreshRoster);
     } catch (err) {
       errBox.textContent = `Reset failed: ${err.message || err}`;
       errBox.hidden = false;
@@ -854,7 +856,7 @@ function openResetPasswordModal(targetUser, ctx, refreshRoster) {
  * password is gone — by design, since admin shouldn't be sitting on
  * other users' passwords in memory.
  */
-function renderResetSuccess(targetUser, tempPassword, refreshRoster) {
+function renderResetSuccess(targetUser, tempPassword, ctx, refreshRoster) {
   const panel = document.querySelector('#wt-modal .wt-modal__panel');
   panel.innerHTML = '';
 

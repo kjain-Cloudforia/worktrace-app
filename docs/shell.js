@@ -53,11 +53,12 @@ const SS = {
 };
 
 const GITHUB_API = 'https://api.github.com';
-const AUTH_RAW   = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main/users';
 // Contents API path for worktrace-auth — used as the AUTHORITATIVE source
-// for auth records (sign-in, recovery, password change). Unlike raw.github
-// usercontent.com, this endpoint is keyed by commit, never CDN-cached
-// stale, and works without a PAT for public repos.
+// for every auth-record read (sign-in, recovery, password change). We
+// deliberately do NOT use raw.githubusercontent.com: that CDN keys cache
+// by path and ignores query-string busters, so just-rewritten records
+// can serve stale for several minutes. api.github.com/contents is keyed
+// by commit and is always current. Public for public repos — no PAT needed.
 const AUTH_API   = 'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents';
 
 let SHELL_STATE = {
@@ -95,6 +96,45 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// Feather-icons "eye" and "eye-off", inlined to avoid a network fetch
+// or icon-library dep. SVG strokes use currentColor so the toggle
+// inherits its colour from CSS (`.wt-pw-toggle` rules). Declared
+// before passwordField() / enhancePasswordInput() so the references
+// inside them are unambiguous (not relying on var-style hoisting).
+const PW_EYE_SVG = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>`;
+
+const PW_EYE_OFF_SVG = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>`;
+
+/**
+ * Attach a reveal-toggle button to a password input. Used internally
+ * by passwordField() and enhancePasswordInput() to keep their click
+ * handlers identical. Mutates `input.type` and the toggle's icon +
+ * aria-label on each click.
+ */
+function attachPasswordToggle(input, toggle) {
+  toggle.innerHTML = PW_EYE_SVG;
+  toggle.addEventListener('click', () => {
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    toggle.innerHTML = showing ? PW_EYE_SVG : PW_EYE_OFF_SVG;
+    const label = showing ? 'Show password' : 'Hide password';
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('title', label);
+    // Keep focus on the input so typing flow isn't disrupted.
+    input.focus();
+  });
+}
+
 /**
  * Build a password field with a built-in reveal toggle (eye icon).
  *
@@ -116,7 +156,6 @@ function el(tag, attrs = {}, ...children) {
  */
 function passwordField(attrs = {}) {
   const input = el('input', { type: 'password', ...attrs });
-
   const toggle = el('button', {
     type: 'button',
     class: 'wt-pw-toggle',
@@ -124,40 +163,11 @@ function passwordField(attrs = {}) {
     title: 'Show password',
     tabindex: '-1',  // keep tab order on the inputs, not the toggle
   });
-  toggle.innerHTML = PW_EYE_SVG;
-
-  toggle.addEventListener('click', () => {
-    const showing = input.type === 'text';
-    input.type = showing ? 'password' : 'text';
-    toggle.innerHTML = showing ? PW_EYE_SVG : PW_EYE_OFF_SVG;
-    const label = showing ? 'Show password' : 'Hide password';
-    toggle.setAttribute('aria-label', label);
-    toggle.setAttribute('title', label);
-    // Keep focus on the input so typing flow isn't disrupted.
-    input.focus();
-  });
-
+  attachPasswordToggle(input, toggle);
   const wrapper = el('div', { class: 'wt-pw-field' }, input, toggle);
   wrapper.input = input;
   return wrapper;
 }
-
-// Feather-icons "eye" and "eye-off", inlined to avoid a network fetch
-// or icon-library dep. SVG strokes use currentColor so the toggle
-// inherits its colour from CSS (`.wt-pw-toggle` rules).
-const PW_EYE_SVG = `
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-    <circle cx="12" cy="12" r="3"/>
-  </svg>`;
-
-const PW_EYE_OFF_SVG = `
-  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
-    <line x1="1" y1="1" x2="23" y2="23"/>
-  </svg>`;
 
 /**
  * Wrap an existing password input (one already in the DOM, e.g. the
@@ -178,16 +188,7 @@ function enhancePasswordInput(input) {
     title: 'Show password',
     tabindex: '-1',
   });
-  toggle.innerHTML = PW_EYE_SVG;
-  toggle.addEventListener('click', () => {
-    const showing = input.type === 'text';
-    input.type = showing ? 'password' : 'text';
-    toggle.innerHTML = showing ? PW_EYE_SVG : PW_EYE_OFF_SVG;
-    const label = showing ? 'Show password' : 'Hide password';
-    toggle.setAttribute('aria-label', label);
-    toggle.setAttribute('title', label);
-    input.focus();
-  });
+  attachPasswordToggle(input, toggle);
   wrapper.appendChild(toggle);
 }
 
@@ -256,30 +257,17 @@ async function ghFetchFromRepo(ownerRepo, path) {
 /**
  * Fetch the auth file for a given username from worktrace-auth.
  *
- * Important: GitHub's `raw.githubusercontent.com` is served via a CDN
- * that can return a stale copy for several minutes after a write. The
- * dashboard relies on always getting the *current* ciphertext, otherwise:
- *  - After a password change, sign-in with the new password would fail
- *    (CDN returns the pre-rekey blob; new password doesn't decrypt it).
- *  - After a password change, sign-in with the old password would still
- *    work (CDN's stale blob is the pre-rekey one).
- *
- * Two defenses, both applied:
- *  1. A per-request `?_=<random>` query string so the CDN treats every
- *     fetch as a fresh URL (most CDNs don't cache by querystring).
- *  2. `cache: 'no-store'` to bypass the browser's HTTP cache.
+ * Uses the GitHub Contents API (api.github.com), not raw.githubusercontent.com.
+ * The raw CDN keys its cache by path and ignores query-string busters, so
+ * a just-rewritten file can serve stale to a given edge for minutes after
+ * a commit — which caused real "wrong password" symptoms after password
+ * changes during Phase 5h. The Contents API is keyed by commit and never
+ * has this lag. `Accept: vnd.github.v3.raw` makes the body the raw file
+ * content instead of the `{content: base64, ...}` envelope.
  *
  * Returns the encrypted user record JSON, or throws on 404 / parse error.
  */
 async function fetchAuthRecord(username) {
-  // Use the Contents API instead of raw.githubusercontent.com — the raw
-  // CDN keys its cache by path (ignoring query strings), so a cache-buster
-  // doesn't help when an edge is serving the pre-rekey blob. The API
-  // returns the authoritative content for the current commit.
-  //
-  // Accept: vnd.github.v3.raw makes the response body the file itself
-  // (rather than the wrapping {content: base64} envelope). The endpoint
-  // is public-readable for our public repo — no PAT needed.
   const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const url = `${AUTH_API}/users/${encodeURIComponent(username)}.json${buster}`;
   const res = await fetch(url, {
@@ -819,6 +807,8 @@ function openChangePasswordModal() {
       workBox.hidden = true;
       const panel = $('#wt-modal').querySelector('.wt-modal__panel');
       panel.innerHTML = '';
+      // signOut() handles modal teardown implicitly via location.replace,
+      // so we don't need to call closeModal here.
       panel.append(
         el('h2', {}, 'Password changed ✓'),
         el('p', { class: 'wt-modal__success' },

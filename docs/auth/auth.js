@@ -279,7 +279,10 @@ export async function buildUserRecord({
  *
  * Rules:
  *  - start and end are 'HH:MM' (24-hour, zero-padded).
- *  - timezone is any IANA name the browser recognises (`Intl.supportedValuesOf`).
+ *  - timezone is any IANA name the browser accepts via Intl.DateTimeFormat
+ *    (accepts both canonical names AND linked aliases like Asia/Kolkata,
+ *    where supportedValuesOf would only list the canonical Asia/Calcutta
+ *    on some platforms).
  *  - start === end is rejected (zero-length shift makes no sense).
  *  - start > end is allowed and means the shift crosses midnight (e.g. 14:00 → 05:00).
  */
@@ -557,10 +560,12 @@ export async function __selfTest() {
   const { pat: afterRekey } = await unlockUserRecord(rekeyed, 'New-Stronger-Pass-123!');
   if (afterRekey !== pat) throw new Error('rekey round-trip failed');
 
-  // escrow record round-trips under admin password
-  const adminPw = 'Admin-Strong-Pass-9!';
-  const escrow = await buildEscrowRecord({ username: 'demo', pat, adminPassword: adminPw });
-  const escrowed = await unlockEscrowRecord(escrow, adminPw);
+  // escrow record round-trips under the recovery code (production contract —
+  // Phase 5h pivoted away from encrypting escrow under admin password).
+  const escrowCode = normalizeRecoveryCode(generateRecoveryCode());
+  const escrow = await buildEscrowRecord({ username: 'demo', pat, adminPassword: escrowCode });
+  if (escrow.encrypted_by !== 'recovery_code') throw new Error('escrow not tagged as recovery_code');
+  const escrowed = await unlockEscrowRecord(escrow, escrowCode);
   if (escrowed !== pat) throw new Error('escrow round-trip failed');
 
   // recovery code round-trips, normalises loose input
@@ -579,5 +584,35 @@ export async function __selfTest() {
   } catch (e) { threwOnBadCode = true; }
   if (!threwOnBadCode) throw new Error('wrong recovery code did not throw');
 
-  return { ok: true, message: 'all auth.js self-tests passed (incl. escrow + recovery)' };
+  // workShift round-trips through buildUserRecord → unlockUserRecord
+  const recWithShift = await buildUserRecord({
+    username: 'demo', displayName: 'Demo', dataRepo: 'x/y',
+    pat, password,
+    workShift: { start: '14:00', end: '05:00', timezone: 'Asia/Kolkata' },
+  });
+  if (!recWithShift.work_shift || recWithShift.work_shift.timezone !== 'Asia/Kolkata') {
+    throw new Error('work_shift not embedded correctly');
+  }
+  const { record: unlockedPublic } = await unlockUserRecord(recWithShift, password);
+  if (unlockedPublic.work_shift?.timezone !== 'Asia/Kolkata') {
+    throw new Error('work_shift not preserved across unlock');
+  }
+
+  // validateWorkShift: rejects bad shapes
+  let threwOnBadShift = false;
+  try { validateWorkShift({ start: '25:00', end: '05:00', timezone: 'UTC' }); }
+  catch { threwOnBadShift = true; }
+  if (!threwOnBadShift) throw new Error('validateWorkShift accepted 25:00');
+
+  // validateWorkShift: rejects bogus timezone
+  let threwOnBadTz = false;
+  try { validateWorkShift({ start: '09:00', end: '17:00', timezone: 'Mars/Olympus' }); }
+  catch { threwOnBadTz = true; }
+  if (!threwOnBadTz) throw new Error('validateWorkShift accepted Mars/Olympus');
+
+  // validateWorkShift: accepts Asia/Kolkata even where supportedValuesOf
+  // would omit it (the bug we fixed in Phase 5j post-pivot).
+  validateWorkShift({ start: '14:00', end: '05:00', timezone: 'Asia/Kolkata' });
+
+  return { ok: true, message: 'all auth.js self-tests passed (crypto + escrow + recovery + work_shift)' };
 }

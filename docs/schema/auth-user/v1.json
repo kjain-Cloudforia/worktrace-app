@@ -46,7 +46,7 @@
         },
         "timezone": {
           "type": "string",
-          "description": "IANA timezone name. Examples: 'Asia/Kolkata', 'America/Los_Angeles', 'Europe/London', 'UTC'. The browser validates this against Intl.supportedValuesOf('timeZone') at edit time."
+          "description": "IANA timezone name. Examples: 'Asia/Kolkata', 'America/Los_Angeles', 'Europe/London', 'UTC'. Validated at edit time via Intl.DateTimeFormat — accepts both canonical names and linked aliases (so e.g. Asia/Kolkata works on macOS browsers that only list Asia/Calcutta as canonical)."
         }
       }
     },
