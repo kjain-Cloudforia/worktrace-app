@@ -206,7 +206,18 @@ You as a regular user are unaffected by admin password issues — you can keep s
 
 ## Admin: onboarding a new teammate
 
-Walking a new teammate through the above takes ~30 min of their time. Your part takes ~5 min:
+Walking a new teammate through the above takes ~30 min of their time. Your part takes ~5 min.
+
+### Why YOU do all the GitHub setup (not them)
+
+A common question: *"Can the new teammate just create their own data repo on their own GitHub account and share a PAT with me?"* Technically yes — the dashboard doesn't care whose account hosts the data repo, it just needs a working PAT. **But we recommend you create everything under your org, for four reasons:**
+
+1. **Work-product ownership.** Daily timesheets and module data are billable-hours documentation owned by the firm. Keeping them in the firm's org means departing teammates can't take their history with them.
+2. **Automatic admin read access.** Your admin PAT already has Read scope on every `<your-org>/worktrace-data-*` repo because you own the org. No per-user invitation dance. If teammates own their own repos, each one has to remember to invite you — and forget once means the Admin Console can't see them.
+3. **Cleaner revocation.** When someone leaves, you delete or archive the repo in one click. If they own it, you have to *ask* them to delete it, and they might not.
+4. **Less onboarding friction.** Doing it all yourself takes 5 minutes. Splitting the steps between you and the new teammate means more coordination, more places to drift, more "wait, did you do step 3?"
+
+Treat user-owned repos as the *exception* (e.g. a contractor who insists), not the default. Nothing in the code prevents it — you just point `data_repo` at their repo path and use their PAT. But the default for full-time teammates should be org-owned.
 
 ### Pre-flight (GitHub, before you talk to them)
 
