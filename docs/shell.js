@@ -38,6 +38,7 @@ import {
   unlockRecoveryRecord,
   normalizeRecoveryCode,
   encryptSecret,
+  validateWorkShift,
 } from './auth/auth.js';
 
 // ============================================================
@@ -866,6 +867,178 @@ function openChangePasswordModal() {
 }
 
 // ============================================================
+// Edit-work-shift flow
+// ============================================================
+
+/**
+ * Datalist of every IANA timezone the browser knows. Shared by both the
+ * shell.js edit-shift modal and the admin module's create-user modal.
+ * Lives at #wt-tz-datalist on <body>.
+ */
+function ensureTimezoneDatalist() {
+  let dl = document.getElementById('wt-tz-datalist');
+  if (dl) return;
+  dl = el('datalist', { id: 'wt-tz-datalist' });
+  const zones = typeof Intl?.supportedValuesOf === 'function'
+    ? Intl.supportedValuesOf('timeZone')
+    : [];
+  for (const tz of zones) dl.appendChild(el('option', { value: tz }));
+  document.body.appendChild(dl);
+}
+
+/**
+ * Open the "Edit work shift" modal. Lets the current user update their
+ * own work_shift (start, end, timezone) on their auth record.
+ *
+ * Why no password required: work_shift is a public field (not encrypted).
+ * The PAT cached in sessionStorage already has Contents:Write on
+ * worktrace-auth — enough to commit the updated record. Mirrors the
+ * pattern in the admin module's create-user flow.
+ *
+ * The flow:
+ *   1. Fetch the user's current full record (preserves immutable fields
+ *      + the crypto block, which we DON'T re-write).
+ *   2. Validate the new shift inputs via auth.js validateWorkShift().
+ *   3. Merge: existing record + { work_shift: new, updated_at: now }.
+ *   4. Commit. Show success. Update SHELL_STATE.currentUser so other
+ *      modules see the new shift immediately.
+ */
+function openEditShiftModal() {
+  if (!SHELL_STATE.currentUser) return;
+
+  ensureTimezoneDatalist();
+
+  const current = SHELL_STATE.currentUser.work_shift || {};
+  const startInput = el('input', {
+    type: 'time', autocomplete: 'off', value: current.start || '',
+  });
+  const endInput = el('input', {
+    type: 'time', autocomplete: 'off', value: current.end || '',
+  });
+  const tzInput = el('input', {
+    type: 'text', autocomplete: 'off',
+    list: 'wt-tz-datalist',
+    value: current.timezone || '',
+    placeholder: 'start typing — e.g. America/Los_Angeles',
+  });
+
+  const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
+  const workBox = el('p', { class: 'wt-modal__working', hidden: true });
+  const submit  = el('button', { class: 'wt-modal__submit' }, 'Save');
+  const cancel  = el('button', { class: 'wt-modal__cancel' }, 'Cancel');
+
+  async function attempt() {
+    errBox.hidden = true;
+    const start = (startInput.value || '').trim();
+    const end   = (endInput.value   || '').trim();
+    const tz    = (tzInput.value    || '').trim();
+
+    if (!start || !end || !tz) {
+      errBox.textContent = 'Fill in all three fields.';
+      errBox.hidden = false;
+      return;
+    }
+    let workShift;
+    try {
+      workShift = validateWorkShift({ start, end, timezone: tz });
+    } catch (e) {
+      errBox.textContent = e.message;
+      errBox.hidden = false;
+      return;
+    }
+
+    submit.disabled = true;
+    submit.textContent = 'Saving…';
+    workBox.hidden = false;
+    workBox.textContent = 'Fetching current record…';
+
+    try {
+      // Fetch the latest authoritative copy so we don't overwrite
+      // someone else's concurrent change (e.g. admin updated the user's
+      // display_name between when this session loaded and now).
+      const currentRecord = await fetchAuthRecord(SHELL_STATE.currentUser.username);
+
+      const newRecord = {
+        ...currentRecord,
+        work_shift: workShift,
+        updated_at: new Date().toISOString(),
+      };
+
+      workBox.textContent = 'Saving to worktrace-auth…';
+      await commitToAuthRepo(
+        `users/${SHELL_STATE.currentUser.username}.json`,
+        JSON.stringify(newRecord, null, 2) + '\n',
+        `Update work_shift for ${SHELL_STATE.currentUser.username}`,
+      );
+
+      // Reflect the change in in-memory state so any module that
+      // re-renders next picks up the new shift without a reload.
+      SHELL_STATE.currentUser.work_shift = workShift;
+
+      // Replace modal contents with a brief done-state.
+      const panel = $('#wt-modal').querySelector('.wt-modal__panel');
+      panel.innerHTML = '';
+      const doneBtn = el('button', { class: 'wt-modal__submit' }, 'Done');
+      doneBtn.addEventListener('click', () => {
+        closeModal();
+        // Re-render the route so any tile/detail that uses work_shift
+        // recomputes against the new value.
+        renderRoute();
+      });
+      panel.append(
+        el('h2', {}, 'Work shift updated ✓'),
+        el('p', { class: 'wt-modal__success' },
+          `New shift: ${workShift.start}–${workShift.end} (${workShift.timezone}).`),
+        el('p', { class: 'wt-modal__lead' },
+          'Note: this updates your dashboard view. Your laptop\'s local ' +
+          'config.json controls how dpsync buckets entries — keep them in sync ' +
+          'by editing modules.timesheet.work_hours there too.'),
+        el('div', { class: 'wt-modal__actions' }, doneBtn),
+      );
+    } catch (err) {
+      errBox.textContent = `Save failed: ${err.message || err}`;
+      errBox.hidden = false;
+    } finally {
+      submit.disabled = false;
+      submit.textContent = 'Save';
+      workBox.hidden = true;
+    }
+  }
+
+  submit.addEventListener('click', attempt);
+  cancel.addEventListener('click', closeModal);
+
+  openModal([
+    el('h2', {}, 'Edit work shift'),
+    el('p', { class: 'wt-modal__lead' },
+      `Set the daily shift window the Timesheet (and any future module) ` +
+      `should bucket your entries by. Times are in your local timezone (below).`),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Shift start'),
+      startInput,
+      el('p', { class: 'wt-modal__hint' }, '24-hour, e.g. 14:00.')),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Shift end'),
+      endInput,
+      el('p', { class: 'wt-modal__hint' },
+        'If end is earlier than start, the shift crosses midnight ' +
+        '(e.g. 14:00 → 05:00 is a 15-hour shift ending the next morning).')),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Timezone (IANA name)'),
+      tzInput,
+      el('p', { class: 'wt-modal__hint' },
+        'Start typing for autocomplete. Examples: Asia/Kolkata, America/Los_Angeles, Europe/London, UTC.')),
+
+    errBox,
+    workBox,
+    el('div', { class: 'wt-modal__actions' }, cancel, submit),
+  ]);
+}
+
+// ============================================================
 // Header
 // ============================================================
 
@@ -882,6 +1055,11 @@ function renderHeader() {
   const userEl  = el('div', { class: 'wt-header__user' },
     adminBadge,
     el('span', { class: 'wt-header__user-name' }, userInfo),
+    el('button', {
+      class: 'wt-header__changepw',
+      onclick: openEditShiftModal,
+      title: 'Edit your work shift + timezone',
+    }, 'Edit shift'),
     el('button', {
       class: 'wt-header__changepw',
       onclick: openChangePasswordModal,

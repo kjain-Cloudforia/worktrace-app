@@ -203,6 +203,20 @@
   color: #fff;
 }
 
+/* Work-shift line on each user card — small, monospace-numeric so
+   times align across rows in the roster grid. */
+.wt-admin-card__shift {
+  font-family: var(--wt-font-mono);
+  font-size: 11px;
+  color: var(--wt-fg-muted);
+  font-variant-numeric: tabular-nums;
+}
+.wt-admin-card__shift--missing {
+  color: var(--wt-danger);
+  font-family: var(--wt-font-sans);
+  font-style: italic;
+}
+
 /* Roster header row — count on the left, Add-user button on the right. */
 .wt-admin-detail__header {
   display: flex;

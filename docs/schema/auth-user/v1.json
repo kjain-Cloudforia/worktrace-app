@@ -28,6 +28,28 @@
       "items": { "type": "string" },
       "description": "Admin only — explicit list of repos this admin can administer (e.g. for listing all users). Stored for UI convenience; the actual auth comes from the encrypted PAT's GitHub permissions."
     },
+    "work_shift": {
+      "type": "object",
+      "description": "User's work shift window. Used by every module that buckets entries by 'work day' (e.g. Timesheet). Each user has their own — teammates in different timezones / on different shift patterns coexist cleanly. Optional for backward compatibility with records created before Phase 5j; new records always populate it.",
+      "required": ["start", "end", "timezone"],
+      "additionalProperties": false,
+      "properties": {
+        "start": {
+          "type": "string",
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+          "description": "Shift start time in HH:MM (24-hour), local to the user's timezone. Example: '14:00'."
+        },
+        "end": {
+          "type": "string",
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$",
+          "description": "Shift end time in HH:MM (24-hour), local to the user's timezone. If end < start, the shift spans midnight (e.g. start 14:00 + end 05:00 = 15-hour shift ending the next calendar morning)."
+        },
+        "timezone": {
+          "type": "string",
+          "description": "IANA timezone name. Examples: 'Asia/Kolkata', 'America/Los_Angeles', 'Europe/London', 'UTC'. The browser validates this against Intl.supportedValuesOf('timeZone') at edit time."
+        }
+      }
+    },
     "kdf": {
       "const": "PBKDF2-HMAC-SHA256",
       "description": "Hard-coded for v1. Future schemas will widen."

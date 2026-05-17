@@ -41,6 +41,7 @@ import {
   normalizeRecoveryCode,
   buildUserRecord,
   buildEscrowRecord,
+  validateWorkShift,
 } from '../../auth/auth.js';
 
 // ---- local helpers (kept private to this module) -----------------------
@@ -78,6 +79,25 @@ const PW_EYE_OFF_SVG = `
     <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
     <line x1="1" y1="1" x2="23" y2="23"/>
   </svg>`;
+
+/**
+ * Build a `<datalist>` of every IANA timezone the browser knows about.
+ * Pair with a text input via `list="<id>"` to get autocomplete: user can
+ * type "Asia" and see all Asian timezones, type "Los_" → America/Los_Angeles.
+ * The datalist node is shared by id so multiple inputs in the same modal
+ * reuse one list (browsers don't mind multiple inputs pointing at it).
+ */
+function timezoneDatalist(id = 'wt-tz-datalist') {
+  let dl = document.getElementById(id);
+  if (dl) return dl;
+  dl = el('datalist', { id });
+  const zones = typeof Intl?.supportedValuesOf === 'function'
+    ? Intl.supportedValuesOf('timeZone')
+    : [];
+  for (const tz of zones) dl.appendChild(el('option', { value: tz }));
+  document.body.appendChild(dl);
+  return dl;
+}
 
 function passwordField(attrs = {}) {
   const input = el('input', { type: 'password', ...attrs });
@@ -250,6 +270,16 @@ function openCreateUserModal(ctx, refreshRoster) {
   const codeInput     = el('input', { type: 'text', autocomplete: 'off',
                                        placeholder: 'XXXX-XXXX-XXXX-XXXX-XXXX-XXXX' });
 
+  // Work shift — three required fields, no defaults (admin always fills).
+  timezoneDatalist();  // ensure the datalist exists in the DOM
+  const shiftStartInput = el('input', { type: 'time', autocomplete: 'off' });
+  const shiftEndInput   = el('input', { type: 'time', autocomplete: 'off' });
+  const tzInput         = el('input', {
+    type: 'text', autocomplete: 'off',
+    list: 'wt-tz-datalist',
+    placeholder: 'start typing — e.g. America/Los_Angeles',
+  });
+
   const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
   const workBox = el('p', { class: 'wt-modal__working', hidden: true });
   const submit  = el('button', { class: 'wt-modal__submit' }, 'Create user');
@@ -271,16 +301,28 @@ function openCreateUserModal(ctx, refreshRoster) {
 
   async function attempt() {
     errBox.hidden = true;
-    const username = (usernameInput.value || '').trim().toLowerCase();
-    const display  = (displayInput.value  || '').trim();
-    const dataRepo = (repoInput.value     || '').trim();
-    const userPat  = patField.input.value;
-    const initPw   = pwField.input.value;
-    const code     = codeInput.value;
+    const username   = (usernameInput.value || '').trim().toLowerCase();
+    const display    = (displayInput.value  || '').trim();
+    const dataRepo   = (repoInput.value     || '').trim();
+    const userPat    = patField.input.value;
+    const initPw     = pwField.input.value;
+    const code       = codeInput.value;
+    const shiftStart = (shiftStartInput.value || '').trim();
+    const shiftEnd   = (shiftEndInput.value   || '').trim();
+    const tz         = (tzInput.value         || '').trim();
 
     // ---- Input-shape validation ----------------------------------
-    if (!username || !display || !dataRepo || !userPat || !initPw || !code) {
+    if (!username || !display || !dataRepo || !userPat || !initPw || !code
+        || !shiftStart || !shiftEnd || !tz) {
       errBox.textContent = 'Every field is required.';
+      errBox.hidden = false;
+      return;
+    }
+    let workShift;
+    try {
+      workShift = validateWorkShift({ start: shiftStart, end: shiftEnd, timezone: tz });
+    } catch (e) {
+      errBox.textContent = e.message;
       errBox.hidden = false;
       return;
     }
@@ -372,6 +414,7 @@ function openCreateUserModal(ctx, refreshRoster) {
       const userRecord = await buildUserRecord({
         username, displayName: display, dataRepo,
         pat: userPat, password: initPw, isAdmin: false,
+        workShift,
       });
 
       workBox.textContent = 'Encrypting PAT under recovery code (≈2s)…';
@@ -451,6 +494,28 @@ function openCreateUserModal(ctx, refreshRoster) {
       codeInput,
       el('p', { class: 'wt-modal__hint' },
         'The 24-char admin recovery code. Used to build the escrow file.')),
+
+    // --- Work shift -------------------------------------------------
+    // Three required fields. Side-by-side for start/end (they're short
+    // HH:MM values), full-width for timezone (long IANA name).
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Work shift — start'),
+      shiftStartInput,
+      el('p', { class: 'wt-modal__hint' },
+        "Local time in the teammate's timezone (below). 24-hour format.")),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Work shift — end'),
+      shiftEndInput,
+      el('p', { class: 'wt-modal__hint' },
+        'If end is earlier than start, the shift crosses midnight ' +
+        '(e.g. 14:00 → 05:00 is a 15-hour shift ending the next morning).')),
+
+    el('div', { class: 'wt-modal__field' },
+      el('label', {}, 'Timezone (IANA name)'),
+      tzInput,
+      el('p', { class: 'wt-modal__hint' },
+        'Start typing for autocomplete. Examples: Asia/Kolkata, America/Los_Angeles, Europe/London, UTC.')),
 
     errBox,
     workBox,
@@ -1045,6 +1110,15 @@ export default {
       const canReset  = !user.is_admin;
       const canRevoke = !user.is_admin;
 
+      // Format work_shift compactly for the card. Records pre-Phase-5j
+      // may lack work_shift — show a placeholder so admin notices and
+      // can fix via the user's own "Edit shift" modal or by rebuilding
+      // the record.
+      const ws = user.work_shift;
+      const shiftText = ws
+        ? `${ws.start}–${ws.end} ${ws.timezone}`
+        : '(shift not set — pre-5j record)';
+
       return el('div', { class: 'wt-admin-card' },
         el('div', { class: 'wt-admin-card__avatar' }, initials),
         el('div', { class: 'wt-admin-card__body' },
@@ -1057,6 +1131,12 @@ export default {
             user.data_repo
               ? el('code', {}, user.data_repo)
               : el('span', { class: 'wt-admin-card__meta-empty' }, '(no data repo)')
+          ),
+          el('div', { class: 'wt-admin-card__meta' },
+            el('span', {
+              class: ws ? 'wt-admin-card__shift' : 'wt-admin-card__shift wt-admin-card__shift--missing',
+              title: ws ? 'Work shift + timezone' : 'No work_shift on record — backfill via Edit shift',
+            }, `⏱ ${shiftText}`)
           ),
           el('div', { class: 'wt-admin-card__row' }, statusEl)
         ),

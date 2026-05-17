@@ -233,6 +233,7 @@ export async function decryptSecret(bundle, password) {
  * @param {string} args.password       - the user's password (validated against policy)
  * @param {boolean} [args.isAdmin=false]
  * @param {string[]} [args.managedRepos] - for admin: list of repos they govern
+ * @param {object} [args.workShift]    - {start, end, timezone}; see validateWorkShift()
  * @returns {Promise<object>} user record ready to JSON-stringify + commit
  */
 export async function buildUserRecord({
@@ -243,6 +244,7 @@ export async function buildUserRecord({
   password,
   isAdmin = false,
   managedRepos,
+  workShift,
 }) {
   if (!/^[a-z][a-z0-9-]*$/.test(username || '')) {
     throw new Error('username must be a lowercase slug (letters, digits, hyphens; starts with a letter).');
@@ -262,7 +264,44 @@ export async function buildUserRecord({
   if (isAdmin && Array.isArray(managedRepos) && managedRepos.length) {
     record.managed_repos = managedRepos;
   }
+  if (workShift) {
+    record.work_shift = validateWorkShift(workShift);
+  }
   return record;
+}
+
+// ---- Work-shift validation ---------------------------------------------
+
+/**
+ * Validate a work_shift object and return it normalised. Throws if the
+ * shape is wrong so the caller (typically the Admin / Edit Shift UI)
+ * surfaces the specific reason to the user.
+ *
+ * Rules:
+ *  - start and end are 'HH:MM' (24-hour, zero-padded).
+ *  - timezone is any IANA name the browser recognises (`Intl.supportedValuesOf`).
+ *  - start === end is rejected (zero-length shift makes no sense).
+ *  - start > end is allowed and means the shift crosses midnight (e.g. 14:00 → 05:00).
+ */
+export function validateWorkShift({ start, end, timezone }) {
+  const re = /^([01][0-9]|2[0-3]):[0-5][0-9]$/;
+  if (!re.test(start || '')) throw new Error('Shift start must be HH:MM (24-hour).');
+  if (!re.test(end   || '')) throw new Error('Shift end must be HH:MM (24-hour).');
+  if (start === end) throw new Error('Shift start and end must be different.');
+  if (!timezone || typeof timezone !== 'string') {
+    throw new Error('Timezone is required.');
+  }
+  // Validate against the browser's IANA list when available — falls back
+  // to a basic shape check if Intl.supportedValuesOf isn't there.
+  if (typeof Intl?.supportedValuesOf === 'function') {
+    const known = Intl.supportedValuesOf('timeZone');
+    if (!known.includes(timezone)) {
+      throw new Error(`Timezone "${timezone}" is not a valid IANA name.`);
+    }
+  } else if (!/^[A-Za-z_]+(\/[A-Za-z_+\-0-9]+)*$/.test(timezone)) {
+    throw new Error(`Timezone "${timezone}" doesn't look like an IANA name.`);
+  }
+  return { start, end, timezone };
 }
 
 /**
