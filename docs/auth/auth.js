@@ -302,38 +302,74 @@ export async function rekeyUserRecord(record, oldPassword, newPassword) {
 // ---- Escrow records (admin-resettable user password) ------------------
 
 /**
- * Build an escrow record: the user's PAT, encrypted under the *admin's*
- * password. Lives at `worktrace-auth/escrow/<username>.json` so admin can
- * reset a user's password without rotating the PAT or contacting the user.
+ * Build an escrow record: the user's PAT, encrypted under the admin's
+ * recovery code (NOT the admin password — see Phase 5h pivot). Lives at
+ * `worktrace-auth/escrow/<username>.json` so admin can reset a user's
+ * password without rotating the PAT or contacting the user. The escrow
+ * survives every admin password change and recovery because it's keyed
+ * to the long-lived recovery code, not the rotating password.
  *
- * Threat model note: admin's password is now a master key for every
- * escrowed user's PAT. This is not new blast radius — admin's own PAT
- * already has write access to every user's data repo — but it does mean
- * admin's password should be at least as strong as any user's.
+ * Important: `key` is expected to be the NORMALISED Crockford-base32
+ * recovery code (24 chars, uppercase, no hyphens). Caller must run
+ * `normalizeRecoveryCode()` on user input first. We deliberately skip
+ * the human-typed-password policy check (uppercase-only / digit-only)
+ * because the recovery code is high-entropy by construction and would
+ * fail policy for entirely the wrong reason. Mirrors the same bypass
+ * in `buildRecoveryRecord`.
+ *
+ * The legacy `adminPassword` parameter name is kept for backward
+ * compatibility with existing call sites; semantically it's now the
+ * recovery code.
  */
 export async function buildEscrowRecord({ username, pat, adminPassword }) {
   if (!/^[a-z][a-z0-9-]*$/.test(username || '')) {
     throw new Error('username must be a lowercase slug.');
   }
-  const bundle = await encryptSecret(pat, adminPassword);
+  // Inline the crypto primitives instead of calling encryptSecret, so
+  // we skip the password-policy gate (which is sensible for typed-
+  // password records but spurious for a Crockford-base32 code).
+  const salt = randomBytes(KDF_SALT_LEN);
+  const iv   = randomBytes(AES_IV_LEN);
+  const key  = await deriveKey(adminPassword, salt, KDF_ITERATIONS, 'encrypt');
+  const ct   = await crypto.subtle.encrypt(
+    { name: 'AES-GCM', iv }, key, enc.encode(pat));
+
   const now = new Date().toISOString();
   return {
     schema_version: SCHEMA_VERSION,
     kind: 'escrow',
     username,
-    encrypted_by: 'admin',
-    ...bundle,
+    encrypted_by: 'recovery_code',
+    kdf:        KDF_NAME,
+    iterations: KDF_ITERATIONS,
+    salt:       bytesToBase64(salt),
+    iv:         bytesToBase64(iv),
+    ciphertext: bytesToBase64(new Uint8Array(ct)),
     created_at: now,
     updated_at: now,
   };
 }
 
-/** Decrypt an escrow record with admin's password → user's PAT. */
+/**
+ * Decrypt an escrow record with the recovery code (callers must
+ * normalize first — see `normalizeRecoveryCode()`).
+ *
+ * Bypasses `decryptSecret`'s implicit constraints for the same reason
+ * `buildEscrowRecord` bypasses `encryptSecret`: the key is a Crockford
+ * code, not a password.
+ */
 export async function unlockEscrowRecord(record, adminPassword) {
   if (record?.kind !== 'escrow') {
     throw new Error('Not an escrow record.');
   }
-  return decryptSecret(record, adminPassword);
+  if (record.kdf !== KDF_NAME) throw new Error(`Unsupported KDF: ${record.kdf}`);
+  if (record.iterations < 100_000) throw new Error(`Iteration count too low: ${record.iterations}`);
+  const salt = base64ToBytes(record.salt);
+  const iv   = base64ToBytes(record.iv);
+  const ct   = base64ToBytes(record.ciphertext);
+  const key  = await deriveKey(adminPassword, salt, record.iterations, 'decrypt');
+  const plain = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ct);
+  return dec.decode(plain);
 }
 
 // ---- Recovery records (admin-self-recovery via code) ------------------

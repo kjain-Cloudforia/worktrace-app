@@ -335,12 +335,13 @@ function openCreateUserModal(ctx, refreshRoster) {
       });
 
       workBox.textContent = 'Encrypting PAT under recovery code (≈2s)…';
+      // buildEscrowRecord internally bypasses the human-password policy
+      // (recovery code is high-entropy uppercase Crockford and would
+      // fail the lowercase-letter check). It also tags the record with
+      // encrypted_by: 'recovery_code' for the audit trail.
       const escrowRecord = await buildEscrowRecord({
         username, pat: userPat, adminPassword: normalizedCode,
       });
-      // Set encrypted_by to recovery_code so the audit trail in the file
-      // reflects the actual key, matching the Python build script.
-      escrowRecord.encrypted_by = 'recovery_code';
 
       // ---- Commit -------------------------------------------------
       workBox.textContent = `Committing users/${username}.json…`;
