@@ -184,10 +184,11 @@ code { font-family: var(--wt-font-mono); font-size: 0.92em; background: var(--wt
 /* Make room for the toggle button on the right edge of the input. */
 .wt-pw-field > input {
   padding-right: 40px !important;
-  /* Hide the WebKit/Edge native reveal so we don't have two competing
-     icons stacked on top of each other. */
-  -webkit-text-security: disc;
 }
+/* Hide the Edge/IE native reveal/clear icons so we don't stack two
+   competing controls. WebKit / Chrome render their own UI via
+   credentials-auto-fill-button (1Password etc.) which doesn't
+   interfere visually with our toggle, so leave it alone. */
 .wt-pw-field > input::-ms-reveal,
 .wt-pw-field > input::-ms-clear {
   display: none;
