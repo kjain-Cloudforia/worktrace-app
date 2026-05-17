@@ -94,6 +94,102 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+/**
+ * Build a password field with a built-in reveal toggle (eye icon).
+ *
+ * We can't rely on the browser's native reveal control — Chrome shows
+ * it, Safari hides it on blur, Firefox doesn't render one at all, and
+ * password managers paint over the right edge anyway. Painting our own
+ * gives consistent UX across every browser we care about.
+ *
+ * Returns a wrapper `<div class="wt-pw-field">` containing the input
+ * + a toggle button. The wrapper has an `.input` property pointing at
+ * the actual input element, so callers can read `.value` and attach
+ * event listeners without unwrapping.
+ *
+ * Usage:
+ *   const field = passwordField({ autocomplete: 'new-password' });
+ *   container.appendChild(field);
+ *   field.input.addEventListener('keydown', ...);
+ *   console.log(field.input.value);
+ */
+function passwordField(attrs = {}) {
+  const input = el('input', { type: 'password', ...attrs });
+
+  const toggle = el('button', {
+    type: 'button',
+    class: 'wt-pw-toggle',
+    'aria-label': 'Show password',
+    title: 'Show password',
+    tabindex: '-1',  // keep tab order on the inputs, not the toggle
+  });
+  toggle.innerHTML = PW_EYE_SVG;
+
+  toggle.addEventListener('click', () => {
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    toggle.innerHTML = showing ? PW_EYE_SVG : PW_EYE_OFF_SVG;
+    const label = showing ? 'Show password' : 'Hide password';
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('title', label);
+    // Keep focus on the input so typing flow isn't disrupted.
+    input.focus();
+  });
+
+  const wrapper = el('div', { class: 'wt-pw-field' }, input, toggle);
+  wrapper.input = input;
+  return wrapper;
+}
+
+// Feather-icons "eye" and "eye-off", inlined to avoid a network fetch
+// or icon-library dep. SVG strokes use currentColor so the toggle
+// inherits its colour from CSS (`.wt-pw-toggle` rules).
+const PW_EYE_SVG = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>`;
+
+const PW_EYE_OFF_SVG = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>`;
+
+/**
+ * Wrap an existing password input (one already in the DOM, e.g. the
+ * static login input from index.html) with our reveal toggle. The input
+ * gets moved into a wrapper div, the toggle is appended next to it.
+ * Idempotent — running on an already-wrapped input is a no-op.
+ */
+function enhancePasswordInput(input) {
+  if (!input || input.parentElement?.classList.contains('wt-pw-field')) return;
+  const parent = input.parentElement;
+  const wrapper = el('div', { class: 'wt-pw-field' });
+  parent.insertBefore(wrapper, input);
+  wrapper.appendChild(input);
+  const toggle = el('button', {
+    type: 'button',
+    class: 'wt-pw-toggle',
+    'aria-label': 'Show password',
+    title: 'Show password',
+    tabindex: '-1',
+  });
+  toggle.innerHTML = PW_EYE_SVG;
+  toggle.addEventListener('click', () => {
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    toggle.innerHTML = showing ? PW_EYE_SVG : PW_EYE_OFF_SVG;
+    const label = showing ? 'Show password' : 'Hide password';
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('title', label);
+    input.focus();
+  });
+  wrapper.appendChild(toggle);
+}
+
 function show(sel) { $(sel).hidden = false; }
 function hide(sel) { $(sel).hidden = true; }
 
@@ -291,6 +387,10 @@ function bindLoginForm() {
   const errBox    = $('#wt-login-error');
   const workBox   = $('#wt-login-working');
 
+  // Wrap the static HTML password input with our reveal toggle so the
+  // login screen gets the same eye control the modals use.
+  enhancePasswordInput(pwInput);
+
   async function attempt() {
     const username = userInput.value;
     const password = pwInput.value;
@@ -371,8 +471,8 @@ async function fetchAdminRecoveryRecord() {
 function openAdminRecoveryModal() {
   const codeInput    = el('input', { type: 'text', autocomplete: 'off',
                                      placeholder: 'XXXX-XXXX-XXXX-XXXX-XXXX-XXXX' });
-  const newPwInput   = el('input', { type: 'password', autocomplete: 'new-password' });
-  const confirmInput = el('input', { type: 'password', autocomplete: 'new-password' });
+  const newPwField     = passwordField({ autocomplete: 'new-password' });
+  const confirmPwField = passwordField({ autocomplete: 'new-password' });
   const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
   const workBox = el('p', { class: 'wt-modal__working', hidden: true });
   const submit  = el('button', { class: 'wt-modal__submit' }, 'Reset admin password');
@@ -381,8 +481,8 @@ function openAdminRecoveryModal() {
   async function attempt() {
     errBox.hidden = true;
     const code    = codeInput.value;
-    const newPw   = newPwInput.value;
-    const confirm = confirmInput.value;
+    const newPw   = newPwField.input.value;
+    const confirm = confirmPwField.input.value;
 
     if (!code || !newPw || !confirm) {
       errBox.textContent = 'Fill in all three fields.';
@@ -488,13 +588,13 @@ function openAdminRecoveryModal() {
     ),
     el('div', { class: 'wt-modal__field' },
       el('label', {}, 'New admin password'),
-      newPwInput,
+      newPwField,
       el('p', { class: 'wt-modal__hint' },
         'Min 12 chars, mixed case, one digit. Write it down somewhere this time.')
     ),
     el('div', { class: 'wt-modal__field' },
       el('label', {}, 'Confirm new password'),
-      confirmInput
+      confirmPwField
     ),
     errBox,
     workBox,
@@ -636,9 +736,9 @@ async function deleteFromAuthRepo(path, commitMessage) {
 function openChangePasswordModal() {
   if (!SHELL_STATE.currentUser) return;
 
-  const oldInput = el('input', { type: 'password', autocomplete: 'current-password' });
-  const newInput = el('input', { type: 'password', autocomplete: 'new-password' });
-  const confirmInput = el('input', { type: 'password', autocomplete: 'new-password' });
+  const oldField     = passwordField({ autocomplete: 'current-password' });
+  const newField     = passwordField({ autocomplete: 'new-password' });
+  const confirmField = passwordField({ autocomplete: 'new-password' });
   const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
   const workBox = el('p', { class: 'wt-modal__working', hidden: true });
   const submit  = el('button', { class: 'wt-modal__submit' }, 'Change password');
@@ -646,9 +746,9 @@ function openChangePasswordModal() {
 
   async function attempt() {
     errBox.hidden = true;
-    const oldPw = oldInput.value;
-    const newPw = newInput.value;
-    const confirmPw = confirmInput.value;
+    const oldPw = oldField.input.value;
+    const newPw = newField.input.value;
+    const confirmPw = confirmField.input.value;
 
     if (!oldPw || !newPw || !confirmPw) {
       errBox.textContent = 'Fill in all three fields.';
@@ -738,7 +838,7 @@ function openChangePasswordModal() {
 
   submit.addEventListener('click', attempt);
   cancel.addEventListener('click', closeModal);
-  confirmInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') attempt(); });
+  confirmField.input.addEventListener('keydown', (e) => { if (e.key === 'Enter') attempt(); });
 
   openModal([
     el('h2', {}, 'Change password'),
@@ -747,17 +847,17 @@ function openChangePasswordModal() {
     ),
     el('div', { class: 'wt-modal__field' },
       el('label', {}, 'Current password'),
-      oldInput,
+      oldField,
     ),
     el('div', { class: 'wt-modal__field' },
       el('label', {}, 'New password'),
-      newInput,
+      newField,
       el('p', { class: 'wt-modal__hint' },
         'At least 12 characters, mixed case, includes a digit.')
     ),
     el('div', { class: 'wt-modal__field' },
       el('label', {}, 'Confirm new password'),
-      confirmInput,
+      confirmField,
     ),
     el('div', { class: 'wt-modal__actions' }, cancel, submit),
     errBox,

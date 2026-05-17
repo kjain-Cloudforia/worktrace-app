@@ -63,6 +63,46 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+// Mirror of shell.js passwordField — kept here so the admin module
+// stays self-contained (same pattern as the local el() duplicate).
+// CSS lives in shell.css under .wt-pw-field / .wt-pw-toggle.
+const PW_EYE_SVG = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+    <circle cx="12" cy="12" r="3"/>
+  </svg>`;
+const PW_EYE_OFF_SVG = `
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+       stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/>
+    <line x1="1" y1="1" x2="23" y2="23"/>
+  </svg>`;
+
+function passwordField(attrs = {}) {
+  const input = el('input', { type: 'password', ...attrs });
+  const toggle = el('button', {
+    type: 'button',
+    class: 'wt-pw-toggle',
+    'aria-label': 'Show password',
+    title: 'Show password',
+    tabindex: '-1',
+  });
+  toggle.innerHTML = PW_EYE_SVG;
+  toggle.addEventListener('click', () => {
+    const showing = input.type === 'text';
+    input.type = showing ? 'password' : 'text';
+    toggle.innerHTML = showing ? PW_EYE_SVG : PW_EYE_OFF_SVG;
+    const label = showing ? 'Show password' : 'Hide password';
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('title', label);
+    input.focus();
+  });
+  const wrapper = el('div', { class: 'wt-pw-field' }, input, toggle);
+  wrapper.input = input;
+  return wrapper;
+}
+
 // Use the Contents API for *all* worktrace-auth reads. raw.githubusercontent.com
 // caches by path and can serve stale records for minutes after a write, which
 // would cause spurious "wrong password" errors after a reset or rekey.
@@ -205,8 +245,8 @@ function openCreateUserModal(ctx, refreshRoster) {
                                        placeholder: 'Kashish Jain' });
   const repoInput     = el('input', { type: 'text', autocomplete: 'off',
                                        placeholder: 'kjain-Cloudforia/worktrace-data-<username>' });
-  const patInput      = el('input', { type: 'password', autocomplete: 'off' });
-  const pwInput       = el('input', { type: 'password', autocomplete: 'new-password' });
+  const patField      = passwordField({ autocomplete: 'off' });
+  const pwField       = passwordField({ autocomplete: 'new-password' });
   const codeInput     = el('input', { type: 'text', autocomplete: 'off',
                                        placeholder: 'XXXX-XXXX-XXXX-XXXX-XXXX-XXXX' });
 
@@ -234,8 +274,8 @@ function openCreateUserModal(ctx, refreshRoster) {
     const username = (usernameInput.value || '').trim().toLowerCase();
     const display  = (displayInput.value  || '').trim();
     const dataRepo = (repoInput.value     || '').trim();
-    const userPat  = patInput.value;
-    const initPw   = pwInput.value;
+    const userPat  = patField.input.value;
+    const initPw   = pwField.input.value;
     const code     = codeInput.value;
 
     // ---- Input-shape validation ----------------------------------
@@ -396,13 +436,13 @@ function openCreateUserModal(ctx, refreshRoster) {
 
     el('div', { class: 'wt-modal__field' },
       el('label', {}, "User's GitHub PAT (fine-grained)"),
-      patInput,
+      patField,
       el('p', { class: 'wt-modal__hint' },
         'Contents:Read+Write on the data repo. Never sent anywhere — we encrypt it locally.')),
 
     el('div', { class: 'wt-modal__field' },
       el('label', {}, 'Initial password (user will rotate it)'),
-      pwInput,
+      pwField,
       el('p', { class: 'wt-modal__hint' },
         'Min 12 chars, mixed case, one digit. Pick something memorable to dictate.')),
 
@@ -579,8 +619,8 @@ function openRevokeUserModal(targetUser, ctx, refreshRoster) {
 function openResetPasswordModal(targetUser, ctx, refreshRoster) {
   const codeInput    = el('input', { type: 'text', autocomplete: 'off',
                                      placeholder: 'XXXX-XXXX-XXXX-XXXX-XXXX-XXXX' });
-  const newPwInput   = el('input', { type: 'password', autocomplete: 'new-password' });
-  const confirmInput = el('input', { type: 'password', autocomplete: 'new-password' });
+  const newPwField     = passwordField({ autocomplete: 'new-password' });
+  const confirmPwField = passwordField({ autocomplete: 'new-password' });
   const errBox  = el('p', { class: 'wt-modal__error', hidden: true });
   const workBox = el('p', { class: 'wt-modal__working', hidden: true });
   const submit  = el('button', { class: 'wt-modal__submit' }, 'Reset password');
@@ -589,8 +629,8 @@ function openResetPasswordModal(targetUser, ctx, refreshRoster) {
   async function attempt() {
     errBox.hidden = true;
     const code    = codeInput.value;
-    const newPw   = newPwInput.value;
-    const confirm = confirmInput.value;
+    const newPw   = newPwField.input.value;
+    const confirm = confirmPwField.input.value;
 
     if (!code || !newPw || !confirm) {
       errBox.textContent = 'Fill in all three fields.';
@@ -707,14 +747,14 @@ function openResetPasswordModal(targetUser, ctx, refreshRoster) {
     ),
     el('div', { class: 'wt-modal__field' },
       el('label', {}, `New temporary password for @${targetUser.username}`),
-      newPwInput,
+      newPwField,
       el('p', { class: 'wt-modal__hint' },
         'Min 12 chars, mixed case, one digit. ' +
         'You will see it once on the next screen so you can copy + share it.')
     ),
     el('div', { class: 'wt-modal__field' },
       el('label', {}, 'Confirm temporary password'),
-      confirmInput
+      confirmPwField
     ),
     errBox,
     workBox,
