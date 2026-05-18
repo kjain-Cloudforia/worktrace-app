@@ -19,12 +19,20 @@ This repository holds **only HTML/JS/CSS**. No data, no credentials. All data li
         Pages source         users/<u>.json      modules/<m>/data.json
                              escrow/<u>.json
                              admin.recovery.json
+
+           Each laptop also runs:
+
+                          worktrace-cli (PUBLIC)
+                          Local sync scripts +
+                          shared CLAUDE rules +
+                          install.sh for new teammates
 ```
 
-Three repos, separated by what's in them:
+Four repos, separated by what's in them:
 - **`worktrace-app`** (this repo) — dashboard code. Public so GitHub Pages serves it free.
 - **`worktrace-auth`** — encrypted credentials. Public because the *ciphertext* is safe to expose.
 - **`worktrace-data-<u>`** — per-user data. Private; one per user.
+- **`worktrace-cli`** — laptop-side: `dpsync` + recovery scripts + the shared `CLAUDE.shared.md` rules that get auto-injected into every teammate's `~/.claude/CLAUDE.md`. Cloned to `~/Documents/DevPlatform/` via the one-line install script. See [`worktrace-cli/NEW-TEAMMATE.md`](https://github.com/kjain-Cloudforia/worktrace-cli/blob/main/NEW-TEAMMATE.md) for the onboarding flow.
 
 ## How a sign-in works
 
