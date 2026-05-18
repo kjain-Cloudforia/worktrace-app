@@ -55,113 +55,48 @@ The initial password admin gave you was chosen by them and might exist in their 
 
 ---
 
-## 5. Set up the laptop side (~20 minutes)
+## 5. Set up the laptop side (~3 minutes, one command)
 
-Now the actual work logging. You'll need:
-- macOS or Linux (Windows works in principle but the shell hooks assume zsh)
-- Python 3.10+
-- Git
-- [Claude Code](https://claude.com/claude-code) installed and signed in
-
-### 5a. Clone your data repo
-
-Admin should have created `<org>/worktrace-data-<your-username>` and added you as a collaborator with Write access. Accept the GitHub invitation if you haven't.
+Open Terminal on your laptop and paste this:
 
 ```bash
-mkdir -p ~/Documents/DevPlatform
-cd ~/Documents/DevPlatform
-git clone git@github.com:<org>/worktrace-data-<your-username>.git sync
+curl -fsSL https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-cli/main/install.sh | bash
 ```
 
-(If you don't have SSH set up with GitHub: use the HTTPS clone URL instead. The PAT below will handle authentication.)
+The script asks you for **just two things** (everything else is auto-discovered from the WorkTrace account admin already provisioned for you):
 
-### 5b. Get your PAT from admin
+1. **Your username** — the lowercase slug admin gave you (e.g. `xyz`).
+2. **Your GitHub PAT** — the long `github_pat_...` string admin sent you out-of-band.
 
-Admin generated a fine-grained GitHub PAT for you when they provisioned you. Ask them for the token string. It looks like `github_pat_11AB...` (40+ chars). Save it somewhere temporarily — you'll paste it into a config file in the next step.
+The script then:
 
-### 5c. Create `config.json`
+- Looks up your account in worktrace-auth (public, no auth needed) → pulls down your display name, timezone, shift start/end, and the URL of your private data repo.
+- Verifies your PAT works against your data repo (catches typos before committing to setup).
+- Clones `worktrace-cli` into `~/Documents/DevPlatform/`.
+- Generates `~/Documents/DevPlatform/config.json` (chmod 600) with all the pulled values + your PAT.
+- Clones your private data repo into `~/Documents/DevPlatform/sync/` with the PAT embedded so future `dpsync` pushes work without prompts.
+- Adds the shell hook to your `~/.zshrc` (passively captures CLI activity for project attribution).
+- Injects the WorkTrace platform rules into `~/.claude/CLAUDE.md` (between markers; any personal rules you add later are kept outside the markers and won't be touched).
+- Prints the final step: sign in to the dashboard and rotate your password.
 
-```bash
-cd ~/Documents/DevPlatform
-cat > config.json <<'EOF'
-{
-  "platform": {
-    "user_id": "<your-username>",
-    "display_name": "<Your Full Name>",
-    "timezone": "Asia/Kolkata",
-    "remote_data_repo": "git@github.com:<org>/worktrace-data-<your-username>.git",
-    "github_token": "<paste your PAT here>",
-    "auto_sync": false
-  },
-  "modules": {
-    "timesheet": {
-      "enabled": true,
-      "work_hours": { "start": "14:00", "end": "05:00" },
-      "headline_policy": "first-sentence-join"
-    }
-  }
-}
-EOF
-chmod 600 config.json
-```
+Total: about 3 minutes including the one-time install. Admin can walk you through it on a 5-minute screenshare.
 
-Edit the placeholders to your actual values. The `chmod 600` is important — it makes the file readable only by your user account, since the PAT lives there in plaintext.
+### What you'll need before running
 
-> If your work shift is different from `14:00 → 05:00 IST`, adjust the `work_hours` block. The Timesheet module buckets every entry by your shift window.
+| | |
+|---|---|
+| Your username | admin sent it |
+| Your initial password | admin sent it (for dashboard sign-in, not the install script) |
+| Your PAT | admin sent it (paste into install script) |
+| Python 3.10+, git, curl | all standard on macOS/Linux; install via brew / apt if missing |
 
-### 5d. Set up the shell hook (optional but recommended)
+### After the install — the final manual step
 
-The shell hook auto-captures certain commands (Salesforce CLI deploys, etc.) so the Timesheet module has evidence of what you actually shipped. Skip if you don't use the Salesforce CLI.
+1. Open https://kjain-Cloudforia.github.io/worktrace-app/
+2. Sign in: your username + the initial password from admin.
+3. Click **Change password** in the header → set a real password you'll remember.
 
-```bash
-cd ~/Documents/DevPlatform
-# (admin will share shell-hook.zsh — copy it into this folder)
-echo "source ~/Documents/DevPlatform/shell-hook.zsh" >> ~/.zshrc
-source ~/.zshrc
-```
-
-### 5e. Tell Claude about your shift
-
-Add this section to `~/.claude/CLAUDE.md` (create the file if it doesn't exist):
-
-```markdown
-# Personal config
-
-## Work hours
-- Work shift: **2 PM IST → 5 AM IST**.
-- A single "work day" runs from 14:00 IST one calendar day to 05:00 IST the next.
-- Use these IST shift boundaries for "today", "yesterday", "this week" — not UTC midnight or calendar-IST midnight.
-
-## Shared timesheet
-- Personal multi-project timesheet log lives at `~/Documents/DevPlatform/modules/timesheet/timesheet.md` (canonical, private to this laptop).
-- Per-user config: `~/Documents/DevPlatform/config.json`.
-```
-
-Adjust the work-hours line if your shift is different.
-
-### 5f. Smoke-test the sync
-
-Make sure your local + remote line up:
-
-```bash
-cd ~/Documents/DevPlatform/sync
-git pull
-```
-
-Should succeed silently. If it fails, your PAT might not have the right scope — ping admin.
-
-### 5g. Run your first sync
-
-(Once `dpsync.py` is available in `~/Documents/DevPlatform/` — admin will share it.)
-
-```bash
-cd ~/Documents/DevPlatform
-python3 dpsync.py
-```
-
-This reads `modules/timesheet/timesheet.md`, generates a sanitized JSON summary, and pushes to your data repo. First-run output should mention "no changes" if you haven't started logging yet.
-
-Refresh the dashboard — the Timesheet tile should now show whatever entries you've logged.
+You're done. From here, just open Claude and work normally — the auto-sync handles everything.
 
 ---
 
