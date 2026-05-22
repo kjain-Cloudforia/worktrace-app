@@ -138,6 +138,22 @@
   line-height: 1.55;
   color: var(--wt-fg);
 }
+/* Vertical bulleted version of the summary — one short point per line,
+   tight spacing so the entry stays compact. The expanded long-form
+   bullets in the collapsible <details> below use .wt-ts-bullets instead. */
+.wt-ts-entry__headline-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--wt-fg);
+}
+.wt-ts-entry__headline-list li {
+  margin-bottom: 2px;
+}
+.wt-ts-entry__headline-list li:last-child {
+  margin-bottom: 0;
+}
 .wt-ts-entry__tags {
   margin-top: 8px;
   display: flex;

@@ -220,7 +220,19 @@ export default {
         ...dayEntries.map(e =>
           el('div', { class: 'wt-ts-entry' },
             el('div', { class: 'wt-ts-entry__project' }, projectLabel(e.project)),
-            el('div', { class: 'wt-ts-entry__headline' }, e.headline || ''),
+            // Headline is a single string with " · " separators between short
+            // summary points. Render as a vertical bulleted list instead of
+            // a paragraph so each point stands out. (The detailed long-form
+            // bullets remain in the collapsible <details> block below.)
+            e.headline
+              ? el('ul', { class: 'wt-ts-entry__headline-list' },
+                  ...e.headline
+                    .split(/\s*·\s*/)
+                    .map(headlineSegment => headlineSegment.trim())
+                    .filter(headlineSegment => headlineSegment.length > 0)
+                    .map(headlineSegment => el('li', {}, headlineSegment))
+                )
+              : null,
             (e.tags || []).length
               ? el('div', { class: 'wt-ts-entry__tags' },
                   ...e.tags.map(t => el('span', { class: 'wt-ts-tag' }, t))
