@@ -127,6 +127,62 @@
   border-radius: 8px;
   border: 1px solid var(--wt-tile-border);
 }
+/* ---- Week navigation header (above the timeline) ---- */
+.wt-ts-week-nav {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  margin: 16px 0 12px;
+  padding: 8px 12px;
+  background: var(--wt-bg);
+  border: 1px solid var(--wt-tile-border);
+  border-radius: 6px;
+}
+.wt-ts-week-nav__btn {
+  background: transparent;
+  border: 1px solid var(--wt-tile-border);
+  color: var(--wt-fg);
+  font-size: 18px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 4px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.wt-ts-week-nav__btn:hover:not([disabled]) {
+  background: var(--wt-tile-border);
+  color: var(--wt-accent);
+}
+.wt-ts-week-nav__btn[disabled] {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+.wt-ts-week-nav__label {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--wt-fg);
+  min-width: 180px;
+  text-align: center;
+}
+.wt-ts-week-nav__today {
+  background: transparent;
+  border: none;
+  color: var(--wt-accent);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 4px 8px;
+  border-radius: 4px;
+  text-decoration: underline;
+}
+.wt-ts-week-nav__today:hover {
+  background: var(--wt-tile-border);
+}
+
 .wt-ts-entry__project {
   font-size: 12px;
   font-weight: 600;

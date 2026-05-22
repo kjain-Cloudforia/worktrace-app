@@ -71,6 +71,39 @@ function totalCounts(entries) {
   return sum;
 }
 
+// ---- week helpers ----
+// Week starts Monday. All date math uses browser-local time — fine for our
+// single-user-per-dashboard model where the viewer's tz typically matches
+// the timesheet's IST work-day labels.
+
+function startOfWeekMonday(anyDate) {
+  const dateCopy = new Date(anyDate);
+  const dayOfWeek = dateCopy.getDay();   // 0=Sun, 1=Mon, …, 6=Sat
+  const dayShiftToMonday = (dayOfWeek === 0) ? -6 : (1 - dayOfWeek);
+  dateCopy.setDate(dateCopy.getDate() + dayShiftToMonday);
+  dateCopy.setHours(0, 0, 0, 0);
+  return dateCopy;
+}
+
+function isWorkDateInWeek(workDateString, weekMondayDate) {
+  if (!workDateString) return false;
+  // Parse YYYY-MM-DD as a local-midnight date so it lines up with the
+  // weekMondayDate (also local-midnight).
+  const entryDate = new Date(workDateString + 'T00:00:00');
+  const weekEndExclusive = new Date(weekMondayDate);
+  weekEndExclusive.setDate(weekEndExclusive.getDate() + 7);
+  return entryDate >= weekMondayDate && entryDate < weekEndExclusive;
+}
+
+function formatWeekRangeLabel(weekMondayDate) {
+  const weekSundayDate = new Date(weekMondayDate);
+  weekSundayDate.setDate(weekSundayDate.getDate() + 6);
+  const monthDayFormat = { month: 'short', day: 'numeric' };
+  const mondayLabel = weekMondayDate.toLocaleDateString('en-US', monthDayFormat);
+  const sundayLabel = weekSundayDate.toLocaleDateString('en-US', monthDayFormat);
+  return `${mondayLabel} – ${sundayLabel}, ${weekMondayDate.getFullYear()}`;
+}
+
 // ---- Module export ----
 
 export default {
@@ -199,58 +232,116 @@ export default {
     container.appendChild(summary);
 
     // Entries — newest first, grouped by date
-    const entries = [...(data.entries || [])].sort((a, b) =>
+    const sortedEntryList = [...(data.entries || [])].sort((a, b) =>
       (b.work_date || '').localeCompare(a.work_date || ''));
-    if (entries.length === 0) {
+    if (sortedEntryList.length === 0) {
       container.appendChild(el('p', { class: 'wt-tile__placeholder' },
         'No entries yet.'));
       return;
     }
 
-    const byDate = new Map();
-    for (const e of entries) {
-      if (!byDate.has(e.work_date)) byDate.set(e.work_date, []);
-      byDate.get(e.work_date).push(e);
+    // Week navigation state — default to the current week (Monday today).
+    // Re-rendered in place by renderForSelectedWeek() on prev/next/today click.
+    const currentWeekMonday = startOfWeekMonday(new Date());
+    let selectedWeekMonday = new Date(currentWeekMonday);
+
+    const weekNavHeader = el('div', { class: 'wt-ts-week-nav' });
+    const timelineContainer = el('div', { class: 'wt-ts-timeline-container' });
+    container.appendChild(weekNavHeader);
+    container.appendChild(timelineContainer);
+
+    function renderEntryNode(entry) {
+      return el('div', { class: 'wt-ts-entry' },
+        el('div', { class: 'wt-ts-entry__project' }, projectLabel(entry.project)),
+        entry.headline
+          ? el('ul', { class: 'wt-ts-entry__headline-list' },
+              ...entry.headline
+                .split(/\s*·\s*/)
+                .map(headlineSegment => headlineSegment.trim())
+                .filter(headlineSegment => headlineSegment.length > 0)
+                .map(headlineSegment => el('li', {}, headlineSegment))
+            )
+          : null,
+        (entry.tags || []).length
+          ? el('div', { class: 'wt-ts-entry__tags' },
+              ...entry.tags.map(tagText => el('span', { class: 'wt-ts-tag' }, tagText))
+            )
+          : null,
+        (entry.bullets || []).length
+          ? el('details', { class: 'wt-ts-entry__bullets' },
+              el('summary', {}, `Show ${entry.bullets.length} bullet${entry.bullets.length === 1 ? '' : 's'}`),
+              el('ul', { class: 'wt-ts-bullets' },
+                ...entry.bullets.map(bulletText => el('li', { html: bulletToHTML(bulletText) }))
+              )
+            )
+          : null
+      );
     }
 
-    const timeline = el('div', { class: 'wt-ts-timeline' });
-    for (const [date, dayEntries] of byDate) {
-      const dayBlock = el('div', { class: 'wt-ts-day' },
-        el('h3', { class: 'wt-ts-day__date' }, date),
-        ...dayEntries.map(e =>
-          el('div', { class: 'wt-ts-entry' },
-            el('div', { class: 'wt-ts-entry__project' }, projectLabel(e.project)),
-            // Headline is a single string with " · " separators between short
-            // summary points. Render as a vertical bulleted list instead of
-            // a paragraph so each point stands out. (The detailed long-form
-            // bullets remain in the collapsible <details> block below.)
-            e.headline
-              ? el('ul', { class: 'wt-ts-entry__headline-list' },
-                  ...e.headline
-                    .split(/\s*·\s*/)
-                    .map(headlineSegment => headlineSegment.trim())
-                    .filter(headlineSegment => headlineSegment.length > 0)
-                    .map(headlineSegment => el('li', {}, headlineSegment))
-                )
-              : null,
-            (e.tags || []).length
-              ? el('div', { class: 'wt-ts-entry__tags' },
-                  ...e.tags.map(t => el('span', { class: 'wt-ts-tag' }, t))
-                )
-              : null,
-            (e.bullets || []).length
-              ? el('details', { class: 'wt-ts-entry__bullets' },
-                  el('summary', {}, `Show ${e.bullets.length} bullet${e.bullets.length === 1 ? '' : 's'}`),
-                  el('ul', { class: 'wt-ts-bullets' },
-                    ...e.bullets.map(b => el('li', { html: bulletToHTML(b) }))
-                  )
-                )
-              : null
-          )
-        )
-      );
-      timeline.appendChild(dayBlock);
+    function renderForSelectedWeek() {
+      const isViewingCurrentWeek = selectedWeekMonday.getTime() === currentWeekMonday.getTime();
+
+      // ---- Week-nav header ----
+      weekNavHeader.innerHTML = '';
+      const prevWeekButton = el('button', {
+        class: 'wt-ts-week-nav__btn',
+        title: 'Previous week',
+        onclick: () => {
+          selectedWeekMonday = new Date(selectedWeekMonday);
+          selectedWeekMonday.setDate(selectedWeekMonday.getDate() - 7);
+          renderForSelectedWeek();
+        }
+      }, '‹');
+      const weekRangeLabel = el('span', { class: 'wt-ts-week-nav__label' },
+        formatWeekRangeLabel(selectedWeekMonday));
+      const nextWeekButton = el('button', {
+        class: 'wt-ts-week-nav__btn',
+        title: 'Next week',
+        disabled: isViewingCurrentWeek,
+        onclick: () => {
+          if (isViewingCurrentWeek) return;  // safety — button is also disabled
+          selectedWeekMonday = new Date(selectedWeekMonday);
+          selectedWeekMonday.setDate(selectedWeekMonday.getDate() + 7);
+          renderForSelectedWeek();
+        }
+      }, '›');
+      const todayLink = isViewingCurrentWeek ? null : el('button', {
+        class: 'wt-ts-week-nav__today',
+        onclick: () => {
+          selectedWeekMonday = new Date(currentWeekMonday);
+          renderForSelectedWeek();
+        }
+      }, 'Today');
+      weekNavHeader.append(prevWeekButton, weekRangeLabel, nextWeekButton, todayLink);
+
+      // ---- Timeline body for the selected week ----
+      timelineContainer.innerHTML = '';
+      const entriesInSelectedWeek = sortedEntryList.filter(entry =>
+        isWorkDateInWeek(entry.work_date, selectedWeekMonday));
+
+      if (entriesInSelectedWeek.length === 0) {
+        timelineContainer.appendChild(el('p', { class: 'wt-tile__placeholder' },
+          'No entries this week.'));
+        return;
+      }
+
+      const entriesByWorkDate = new Map();
+      for (const entry of entriesInSelectedWeek) {
+        if (!entriesByWorkDate.has(entry.work_date)) entriesByWorkDate.set(entry.work_date, []);
+        entriesByWorkDate.get(entry.work_date).push(entry);
+      }
+
+      const timelineRoot = el('div', { class: 'wt-ts-timeline' });
+      for (const [workDate, dayEntryList] of entriesByWorkDate) {
+        const dayBlock = el('div', { class: 'wt-ts-day' },
+          el('h3', { class: 'wt-ts-day__date' }, workDate),
+          ...dayEntryList.map(renderEntryNode)
+        );
+        timelineRoot.appendChild(dayBlock);
+      }
+      timelineContainer.appendChild(timelineRoot);
     }
-    container.appendChild(timeline);
+
+    renderForSelectedWeek();
   },
 };
