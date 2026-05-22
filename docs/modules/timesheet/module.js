@@ -305,14 +305,20 @@ export default {
           renderForSelectedWeek();
         }
       }, '›');
-      const todayLink = isViewingCurrentWeek ? null : el('button', {
-        class: 'wt-ts-week-nav__today',
-        onclick: () => {
-          selectedWeekMonday = new Date(currentWeekMonday);
-          renderForSelectedWeek();
-        }
-      }, 'Today');
-      weekNavHeader.append(prevWeekButton, weekRangeLabel, nextWeekButton, todayLink);
+      weekNavHeader.append(prevWeekButton, weekRangeLabel, nextWeekButton);
+      // "Today" link only shows when not on the current week. Native
+      // Element.append() stringifies null to the text "null", so we have
+      // to gate the append rather than passing a possibly-null arg.
+      if (!isViewingCurrentWeek) {
+        const todayLink = el('button', {
+          class: 'wt-ts-week-nav__today',
+          onclick: () => {
+            selectedWeekMonday = new Date(currentWeekMonday);
+            renderForSelectedWeek();
+          }
+        }, 'Today');
+        weekNavHeader.append(todayLink);
+      }
 
       // ---- Timeline body for the selected week ----
       timelineContainer.innerHTML = '';
