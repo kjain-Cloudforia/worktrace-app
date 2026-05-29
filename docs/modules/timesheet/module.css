@@ -127,6 +127,16 @@
   border-radius: 8px;
   border: 1px solid var(--wt-tile-border);
 }
+/* No-work weekday: muted, italic, dashed border to read as "nothing here". */
+.wt-ts-entry--no-work {
+  border-style: dashed;
+  background: transparent;
+}
+.wt-ts-entry__no-work {
+  color: var(--wt-fg-muted);
+  font-style: italic;
+  font-size: 13px;
+}
 /* ---- Week navigation header (above the timeline) ---- */
 .wt-ts-week-nav {
   display: flex;

@@ -251,6 +251,12 @@ export default {
     container.appendChild(timelineContainer);
 
     function renderEntryNode(entry) {
+      // No-work weekday: a clean muted row, no empty project label / bullets.
+      if (entry.no_work) {
+        return el('div', { class: 'wt-ts-entry wt-ts-entry--no-work' },
+          el('div', { class: 'wt-ts-entry__no-work' }, 'No work done.')
+        );
+      }
       return el('div', { class: 'wt-ts-entry' },
         el('div', { class: 'wt-ts-entry__project' }, projectLabel(entry.project)),
         entry.headline
