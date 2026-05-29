@@ -104,6 +104,15 @@ function formatWeekRangeLabel(weekMondayDate) {
   return `${mondayLabel} – ${sundayLabel}, ${weekMondayDate.getFullYear()}`;
 }
 
+// work_date arrives as ISO yyyy-mm-dd; display it as dd-mm-yyyy.
+function formatWorkDate(isoDate) {
+  if (!isoDate) return '';
+  const parts = String(isoDate).split('-');
+  if (parts.length !== 3) return isoDate;
+  const [year, month, day] = parts;
+  return `${day}-${month}-${year}`;
+}
+
 // ---- Module export ----
 
 export default {
@@ -161,7 +170,7 @@ export default {
     container.append(
       el('div', { class: 'wt-ts-tile' },
         el('div', { class: 'wt-ts-tile__latest' },
-          el('div', { class: 'wt-ts-tile__date' }, latestDate),
+          el('div', { class: 'wt-ts-tile__date' }, formatWorkDate(latestDate)),
           ...latestDayEntries.map(e =>
             el('div', { class: 'wt-ts-tile__entry' },
               el('div', { class: 'wt-ts-tile__project' }, projectLabel(e.project)),
@@ -346,7 +355,7 @@ export default {
       const timelineRoot = el('div', { class: 'wt-ts-timeline' });
       for (const [workDate, dayEntryList] of entriesByWorkDate) {
         const dayBlock = el('div', { class: 'wt-ts-day' },
-          el('h3', { class: 'wt-ts-day__date' }, workDate),
+          el('h3', { class: 'wt-ts-day__date' }, formatWorkDate(workDate)),
           ...dayEntryList.map(renderEntryNode)
         );
         timelineRoot.appendChild(dayBlock);
