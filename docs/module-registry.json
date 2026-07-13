@@ -9,6 +9,12 @@
       "enabled": true
     },
     {
+      "id": "tabgroups",
+      "displayName": "Tab Vault",
+      "description": "Park tab groups · free RAM",
+      "enabled": true
+    },
+    {
       "id": "admin",
       "displayName": "Admin Console",
       "description": "Team roster · cross-user view",

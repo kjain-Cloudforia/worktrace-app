@@ -722,6 +722,73 @@ async function deleteFromAuthRepo(path, commitMessage) {
 }
 
 // ============================================================
+// GitHub commit helper — write into the current user's DATA repo
+// ============================================================
+
+/**
+ * Commit a file into the current user's own data_repo via the Contents API.
+ *
+ * This is the write-side counterpart to ghFetchFromCurrentRepo(). Timesheet
+ * is laptop-generated and read-only in the browser, but browser-editable
+ * modules (Tab Vault, Phase 1) persist their state here. The user's own PAT
+ * must carry Contents:Read+Write on their data_repo — it already reads the
+ * repo at sign-in, so a first write that 403s means the PAT's repo scope
+ * needs widening in GitHub settings (no code change).
+ *
+ * Same create-or-update pattern as commitToAuthRepo: probe for the current
+ * blob SHA (omit it on create, pass it on update for optimistic concurrency).
+ * The dpsync laptop path does `git fetch` + `merge --ff-only` before every
+ * run and only writes data.json for modules with a laptop-side sync.py, so
+ * a browser-authored module file (no such sync.py) is pulled down and never
+ * clobbered.
+ */
+async function commitToCurrentRepo(path, contentString, commitMessage) {
+  if (!SHELL_STATE.currentUser?.data_repo) {
+    throw new Error('No data repo configured for the current user.');
+  }
+  if (!SHELL_STATE.pat) throw new Error('Not signed in.');
+  const repo = SHELL_STATE.currentUser.data_repo;
+  const url = `${GITHUB_API}/repos/${repo}/contents/${path}`;
+
+  // Probe for an existing blob SHA — required on update, omitted on create.
+  let sha = null;
+  const probe = await fetch(url, {
+    headers: { 'Authorization': `Bearer ${SHELL_STATE.pat}` },
+  });
+  if (probe.status === 200) {
+    sha = (await probe.json()).sha;
+  } else if (probe.status !== 404) {
+    throw new Error(`Failed to read existing file: HTTP ${probe.status}`);
+  }
+
+  const body = {
+    message: commitMessage,
+    content: strToBase64(contentString),
+    branch: 'main',
+  };
+  if (sha) body.sha = sha;
+
+  const res = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${SHELL_STATE.pat}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401 || res.status === 403) {
+    throw new Error(
+      "Your token can't write to your data repo. Ask the admin to add " +
+      'Contents:Write to your PAT scope, then sign in again.');
+  }
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Save failed: HTTP ${res.status} — ${txt.slice(0, 200)}`);
+  }
+  return res.json();
+}
+
+// ============================================================
 // Change-password flow
 // ============================================================
 
@@ -1215,6 +1282,21 @@ async function loadModule(moduleEntry) {
     async fetchMyData() {
       const dataPath = def.dataPath || `modules/${def.id}/data.json`;
       return ghFetchFromCurrentRepo(dataPath);
+    },
+    /**
+     * Persist this module's data file back into the current user's data
+     * repo. Write-side counterpart to fetchMyData — used by browser-editable
+     * modules (Tab Vault, Phase 1). `dataObject` is JSON-serialised with a
+     * 2-space indent + trailing newline so it stays diff-clean against the
+     * dpsync on-disk format when the laptop pulls it down.
+     */
+    async saveMyData(dataObject, commitMessage) {
+      const dataPath = def.dataPath || `modules/${def.id}/data.json`;
+      return commitToCurrentRepo(
+        dataPath,
+        JSON.stringify(dataObject, null, 2) + '\n',
+        commitMessage || `Update ${def.id} data`,
+      );
     },
     /**
      * Fetch a specific user's data from an explicit `owner/repo`.
