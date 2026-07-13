@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div id="wt-ext">
+    <!-- ============ Sign in ============ -->
+    <section id="view-signin" class="view">
+      <h1><span class="accent">WorkTrace</span> Tab Vault</h1>
+      <p class="lead">Sign in with your WorkTrace account to sync with your vault.</p>
+
+      <label for="in-username">Username</label>
+      <input id="in-username" type="text" autocomplete="username" spellcheck="false" autocapitalize="off">
+
+      <label for="in-password">Password</label>
+      <input id="in-password" type="password" autocomplete="current-password">
+
+      <button id="btn-signin" class="btn btn-primary btn-block">Sign in</button>
+      <p id="signin-error" class="error" hidden></p>
+      <p id="signin-working" class="working" hidden>Unlocking your token… (~2s)</p>
+    </section>
+
+    <!-- ============ Main ============ -->
+    <section id="view-main" class="view" hidden>
+      <header class="topbar">
+        <span id="who" class="who"></span>
+        <button id="btn-signout" class="linkbtn">Sign out</button>
+      </header>
+
+      <button id="btn-save" class="btn btn-primary btn-block">Save all open tabs</button>
+      <p id="save-status" class="status" hidden></p>
+
+      <!-- post-save close picker: tick the specific tabs you want closed -->
+      <div id="close-prompt" class="close-prompt" hidden>
+        <div class="close-prompt__head">
+          <span id="close-prompt-text"></span>
+          <span class="close-prompt__quick">
+            <button id="btn-sel-all" class="linkbtn">All</button>
+            <span class="sep">·</span>
+            <button id="btn-sel-none" class="linkbtn">None</button>
+          </span>
+        </div>
+        <div id="close-list" class="close-list"></div>
+        <div class="close-prompt__actions">
+          <button id="btn-close-tabs" class="btn btn-danger btn-sm" disabled>Close selected (0)</button>
+          <button id="btn-keep-tabs" class="btn btn-ghost btn-sm">Done</button>
+        </div>
+      </div>
+
+      <div class="section-label">Your groups</div>
+      <div id="groups"></div>
+      <p class="footnote">Reordering, renaming &amp; editing live in the
+        <a id="dash-link" href="https://kjain-Cloudforia.github.io/worktrace-app/" target="_blank" rel="noopener">dashboard</a>.</p>
+    </section>
+  </div>
+
+  <script type="module" src="popup.js"></script>
+</body>
+</html>

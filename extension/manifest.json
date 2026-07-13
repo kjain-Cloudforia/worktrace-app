@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "WorkTrace Tab Vault",
+  "version": "0.1.0",
+  "description": "Save your open Chrome tabs and tab groups into your WorkTrace Tab Vault, and reopen a group as a real Chrome tab group.",
+  "permissions": ["tabs", "tabGroups", "storage"],
+  "host_permissions": ["https://api.github.com/*"],
+  "action": {
+    "default_title": "WorkTrace Tab Vault",
+    "default_popup": "popup.html"
+  }
+}
