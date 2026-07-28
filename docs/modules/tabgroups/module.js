@@ -204,7 +204,7 @@ export default {
       return;
     }
 
-    const previewChipList = groupList.slice(0, 4).map(group =>
+    const previewChipList = groupList.slice(0, 6).map(group =>
       el('span', { class: 'wt-tv-chip' },
         el('span', { class: 'wt-tv-dot', style: `background:${hexForColorKey(group.color)}` }),
         group.name || 'Untitled',
