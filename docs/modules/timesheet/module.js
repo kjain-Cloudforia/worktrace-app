@@ -104,13 +104,18 @@ function formatWeekRangeLabel(weekMondayDate) {
   return `${mondayLabel} – ${sundayLabel}, ${weekMondayDate.getFullYear()}`;
 }
 
-// work_date arrives as ISO yyyy-mm-dd; display it as dd-mm-yyyy.
+// work_date arrives as ISO yyyy-mm-dd; display it as "Wkd dd-mm-yyyy"
+// (weekday prepended so the day is readable without opening a calendar).
 function formatWorkDate(isoDate) {
   if (!isoDate) return '';
   const parts = String(isoDate).split('-');
   if (parts.length !== 3) return isoDate;
   const [year, month, day] = parts;
-  return `${day}-${month}-${year}`;
+  const dateObj = new Date(Number(year), Number(month) - 1, Number(day));
+  const weekday = isNaN(dateObj.getTime())
+    ? ''
+    : dateObj.toLocaleDateString('en-US', { weekday: 'short' }) + ' ';
+  return `${weekday}${day}-${month}-${year}`;
 }
 
 // ---- Module export ----
