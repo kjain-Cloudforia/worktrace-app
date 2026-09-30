@@ -109,6 +109,16 @@ function parseHourMinute(hourMinuteText) {
   return hourValue * 60 + minuteValue;
 }
 
+/** 12-hour clock: 1320 → "10:00 PM"; compact → "10 PM" / "6:30 PM". */
+function formatMinuteOfDay(minuteOfDay, compact = false) {
+  const hourOfDay = Math.floor(minuteOfDay / 60);
+  const minuteOfHour = minuteOfDay % 60;
+  const meridiem = hourOfDay < 12 ? 'AM' : 'PM';
+  const hourOnTwelveClock = hourOfDay % 12 || 12;
+  if (compact && minuteOfHour === 0) return `${hourOnTwelveClock} ${meridiem}`;
+  return `${hourOnTwelveClock}:${String(minuteOfHour).padStart(2, '0')} ${meridiem}`;
+}
+
 function formatMinutes(totalMinutes) {
   const hourCount = Math.floor(totalMinutes / 60);
   const minuteRemainder = totalMinutes % 60;
@@ -154,27 +164,34 @@ function buildTimeContext(calendarData) {
     return dayDifference(workDate, instantParts.isoDate) * 1440 + instantParts.minuteOfDay - shiftStartMinutes;
   }
 
-  function formatClock(instantIso) {
-    const minuteOfDay = localPartsOf(new Date(instantIso)).minuteOfDay;
-    return `${String(Math.floor(minuteOfDay / 60)).padStart(2, '0')}:${String(minuteOfDay % 60).padStart(2, '0')}`;
+  function formatClock(instantIso, compact = false) {
+    return formatMinuteOfDay(localPartsOf(new Date(instantIso)).minuteOfDay, compact);
+  }
+
+  /** "10:00–10:30 PM", or "11:30 AM–12:30 PM" when the range crosses AM/PM. */
+  function formatClockRange(startIso, endIso) {
+    const startLabel = formatClock(startIso);
+    const endLabel = formatClock(endIso);
+    const startMeridiem = startLabel.slice(-2);
+    return startMeridiem === endLabel.slice(-2)
+      ? `${startLabel.slice(0, -3)}–${endLabel}` : `${startLabel}–${endLabel}`;
   }
 
   function clockLabelForOffset(offsetMinutes) {
-    const minuteOfDay = ((shiftStartMinutes + offsetMinutes) % 1440 + 1440) % 1440;
-    return `${String(Math.floor(minuteOfDay / 60)).padStart(2, '0')}:${String(minuteOfDay % 60).padStart(2, '0')}`;
+    return formatMinuteOfDay(((shiftStartMinutes + offsetMinutes) % 1440 + 1440) % 1440, true);
   }
 
   const timezoneShortLabel = new Intl.DateTimeFormat('en-US', { timeZone: timezoneName, timeZoneName: 'short' })
     .formatToParts(new Date()).find(part => part.type === 'timeZoneName')?.value || timezoneName;
 
-  return { timezoneName, timezoneShortLabel, shiftLengthMinutes, currentWorkDate, shiftOffsetMinutes, formatClock, clockLabelForOffset };
+  return { timezoneName, timezoneShortLabel, shiftLengthMinutes, currentWorkDate, shiftOffsetMinutes, formatClock, formatClockRange, clockLabelForOffset };
 }
 
 function meetingTooltip(calendarEntry, timeContext) {
   const lineList = [
     calendarEntry.title,
     `${formatShortDate(calendarEntry.work_date, { weekday: 'short', month: 'short', day: 'numeric' })} · ` +
-      `${timeContext.formatClock(calendarEntry.start)}–${timeContext.formatClock(calendarEntry.end)} ` +
+      `${timeContext.formatClockRange(calendarEntry.start, calendarEntry.end)} ` +
       `(${formatMinutes(calendarEntry.minutes)})`,
     `Project: ${calendarEntry.project || 'Unassigned'}`,
     `Status: ${STATUS_LABEL_MAP[calendarEntry.status] || calendarEntry.status}` +
@@ -377,7 +394,7 @@ export default {
       },
         el('div', { class: 'wt-cal-event__title' }, calendarEntry.title),
         el('div', { class: 'wt-cal-event__meta' },
-          `${timeContext.formatClock(calendarEntry.start)}–${timeContext.formatClock(calendarEntry.end)}` +
+          `${timeContext.formatClockRange(calendarEntry.start, calendarEntry.end)}` +
           (calendarEntry.project ? ` · ${calendarEntry.project}` : ''))
       );
     }
@@ -470,7 +487,8 @@ export default {
           headerRow,
           el('div', { class: 'wt-cal-week__body' }, hourLabelColumn, ...dayColumnList))));
       viewContainer.appendChild(el('p', { class: 'wt-cal-footnote' },
-        `Columns are work days (shift ${calendarData.work_shift?.start}→${calendarData.work_shift?.end}); ` +
+        `Columns are work days (shift ${formatMinuteOfDay(parseHourMinute(calendarData.work_shift?.start), true)} → ` +
+        `${formatMinuteOfDay(parseHourMinute(calendarData.work_shift?.end), true)}); ` +
         'a meeting after midnight stays on the day its shift started, same as the Timesheet.'));
       return weekEntryList;
     }
@@ -503,7 +521,7 @@ export default {
             title: meetingTooltip(calendarEntry, timeContext),
             tabindex: '0',
           },
-            el('span', { class: 'wt-cal-month__chip-time' }, timeContext.formatClock(calendarEntry.start)),
+            el('span', { class: 'wt-cal-month__chip-time' }, timeContext.formatClock(calendarEntry.start, true)),
             ` ${calendarEntry.title}`))));
       }
       viewContainer.innerHTML = '';
@@ -533,7 +551,7 @@ export default {
               el('li', { class: `wt-cal-list__item ${statusClassOf(calendarEntry)}`,
                          style: { '--wt-cal-color': colorOf(calendarEntry, projectNameVsColorMap) } },
                 el('span', { class: 'wt-cal-list__time' },
-                  `${timeContext.formatClock(calendarEntry.start)}–${timeContext.formatClock(calendarEntry.end)}`),
+                  `${timeContext.formatClockRange(calendarEntry.start, calendarEntry.end)}`),
                 el('span', { class: 'wt-cal-list__title' }, calendarEntry.title,
                   calendarEntry.response === 'tentative' ? el('span', { class: 'wt-cal-list__note' }, ' (tentative)') : null),
                 el('span', { class: 'wt-cal-list__project' },

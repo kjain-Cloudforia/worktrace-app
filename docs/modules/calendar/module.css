@@ -138,7 +138,7 @@
 .wt-cal-week__head,
 .wt-cal-week__body {
   display: grid;
-  grid-template-columns: 52px repeat(7, minmax(0, 1fr));
+  grid-template-columns: 56px repeat(7, minmax(0, 1fr));
 }
 .wt-cal-week__head { border-bottom: 1px solid var(--wt-tile-border); }
 .wt-cal-week__corner {
@@ -251,7 +251,7 @@
 .wt-cal-list__items { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
 .wt-cal-list__item {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr) auto auto;
+  grid-template-columns: 136px minmax(0, 1fr) auto auto;
   align-items: center;
   gap: 4px 12px;
   padding: 7px 10px;
@@ -289,6 +289,7 @@
   .wt-cal-toggle { align-self: flex-start; }
   .wt-cal-month__cell { min-height: 64px; }
   .wt-cal-month__chip-time { display: none; }
-  .wt-cal-list__item { grid-template-columns: 80px minmax(0, 1fr); }
-  .wt-cal-list__project, .wt-cal-badge { grid-column: 2; justify-self: start; }
+  .wt-cal-list__item { grid-template-columns: 1fr; }
+  .wt-cal-list__title, .wt-cal-list__reason { grid-column: 1; }
+  .wt-cal-list__project, .wt-cal-badge { grid-column: 1; justify-self: start; }
 }
