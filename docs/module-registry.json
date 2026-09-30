@@ -1,6 +1,6 @@
 {
   "schema_version": 2,
-  "_note": "Ordered list of modules the shell loads. The shell dynamic-imports each module's module.js and slots them into the grid in array order. Adding a new module = drop in docs/modules/<id>/ + add an entry here. Modules with `requires_admin: true` only load for users whose auth file has is_admin=true. The per-user data repo URL no longer lives here — each user's auth file in worktrace-auth carries their own `data_repo` field, which is what `shellApi.fetchMyData()` reads from.",
+  "_note": "Ordered list of modules the shell loads. The shell dynamic-imports each module's module.js and slots them into the grid in array order. Adding a new module = drop in docs/modules/<id>/ + add an entry here. Modules with `requires_admin: true` only load for users whose auth file has is_admin=true. The per-user data repo URL no longer lives here \u2014 each user's auth file in worktrace-auth carries their own `data_repo` field, which is what `shellApi.fetchMyData()` reads from.",
   "modules": [
     {
       "id": "timesheet",
@@ -9,15 +9,21 @@
       "enabled": true
     },
     {
+      "id": "calendar",
+      "displayName": "Calendar",
+      "description": "Meetings logged in your timesheet",
+      "enabled": true
+    },
+    {
       "id": "tabgroups",
       "displayName": "Tab Vault",
-      "description": "Park tab groups · free RAM",
+      "description": "Park tab groups \u00b7 free RAM",
       "enabled": true
     },
     {
       "id": "admin",
       "displayName": "Admin Console",
-      "description": "Team roster · cross-user view",
+      "description": "Team roster \u00b7 cross-user view",
       "enabled": true
     }
   ]
