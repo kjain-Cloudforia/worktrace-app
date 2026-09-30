@@ -1299,6 +1299,22 @@ async function loadModule(moduleEntry) {
       );
     },
     /**
+     * Read / write an extra JSON file in this module's own folder of the
+     * user's data repo (`modules/<id>/<fileName>`). For modules whose
+     * data.json is laptop-generated but that also take browser input
+     * the laptop must never overwrite (Calendar: manual.json).
+     */
+    async fetchMyFile(fileName) {
+      return ghFetchFromCurrentRepo(`modules/${def.id}/${fileName}`);
+    },
+    async saveMyFile(fileName, dataObject, commitMessage) {
+      return commitToCurrentRepo(
+        `modules/${def.id}/${fileName}`,
+        JSON.stringify(dataObject, null, 2) + '\n',
+        commitMessage || `Update ${def.id}/${fileName}`,
+      );
+    },
+    /**
      * Fetch a specific user's data from an explicit `owner/repo`.
      * Admins use this to view across user repos in Phase 5d.
      */

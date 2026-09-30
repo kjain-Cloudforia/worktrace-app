@@ -181,10 +181,46 @@ function buildTimeContext(calendarData) {
     return formatMinuteOfDay(((shiftStartMinutes + offsetMinutes) % 1440 + 1440) % 1440, true);
   }
 
+  /** Work day an instant belongs to (same rule as the laptop sync). */
+  function workDateOfInstant(instantIso) {
+    const instantParts = localPartsOf(new Date(instantIso));
+    return (crossesMidnight && instantParts.minuteOfDay < shiftEndMinutes)
+      ? addDays(instantParts.isoDate, -1) : instantParts.isoDate;
+  }
+
+  /** { isoDate, hourMinute:'HH:MM' } of an instant in the data's timezone — pre-fills the form. */
+  function localDateTimeOf(instantIso) {
+    const instantParts = localPartsOf(new Date(instantIso));
+    return {
+      isoDate: instantParts.isoDate,
+      hourMinute: `${String(Math.floor(instantParts.minuteOfDay / 60)).padStart(2, '0')}:` +
+        `${String(instantParts.minuteOfDay % 60).padStart(2, '0')}`,
+    };
+  }
+
+  /** Wall-clock date + 'HH:MM' in the data's timezone → UTC ISO string. */
+  function zonedToUtcIso(isoDate, hourMinute) {
+    const [yearValue, monthValue, dayValue] = isoDate.split('-').map(Number);
+    const wallClockAsUtcMillis = Date.UTC(yearValue, monthValue - 1, dayValue) + parseHourMinute(hourMinute) * 60000;
+    let utcMillis = wallClockAsUtcMillis;
+    for (let passIndex = 0; passIndex < 2; passIndex++) {   // second pass settles DST edges
+      const guessParts = localPartsOf(new Date(utcMillis));
+      const guessWallMillis = Date.parse(guessParts.isoDate + 'T00:00:00Z') + guessParts.minuteOfDay * 60000;
+      utcMillis += wallClockAsUtcMillis - guessWallMillis;
+    }
+    return new Date(utcMillis).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  }
+
+  function todayLocalIsoDate() { return localPartsOf(new Date()).isoDate; }
+
   const timezoneShortLabel = new Intl.DateTimeFormat('en-US', { timeZone: timezoneName, timeZoneName: 'short' })
     .formatToParts(new Date()).find(part => part.type === 'timeZoneName')?.value || timezoneName;
 
-  return { timezoneName, timezoneShortLabel, shiftLengthMinutes, currentWorkDate, shiftOffsetMinutes, formatClock, formatClockRange, clockLabelForOffset };
+  return {
+    timezoneName, timezoneShortLabel, shiftLengthMinutes, currentWorkDate, shiftOffsetMinutes,
+    formatClock, formatClockRange, clockLabelForOffset,
+    workDateOfInstant, localDateTimeOf, zonedToUtcIso, todayLocalIsoDate,
+  };
 }
 
 function meetingTooltip(calendarEntry, timeContext) {
@@ -200,6 +236,10 @@ function meetingTooltip(calendarEntry, timeContext) {
       (calendarEntry.attendee_domains?.length ? `: ${calendarEntry.attendee_domains.join(', ')}` : ''),
   ];
   if (calendarEntry.response && calendarEntry.response !== 'accepted') lineList.push(`RSVP: ${calendarEntry.response}`);
+  if (calendarEntry.source === 'manual') {
+    lineList.splice(4, 1, `Added by you · ${calendarEntry.medium || 'Other'}`);
+    if (calendarEntry.notes) lineList.push(`Notes: ${calendarEntry.notes}`);
+  }
   return lineList.join('\n');
 }
 
@@ -220,6 +260,62 @@ function loggedMinutesByProject(entryList) {
     projectNameVsMinutesMap[projectName] = (projectNameVsMinutesMap[projectName] || 0) + calendarEntry.minutes;
   }
   return Object.entries(projectNameVsMinutesMap).sort((first, second) => second[1] - first[1]);
+}
+
+// ---- meetings added by hand (manual.json, written by this module) ----
+
+const MEETING_MEDIUM_LIST = ['Slack', 'Microsoft Teams', 'Zoom', 'Google Meet', 'Phone', 'In person', 'Other'];
+const MANUAL_FILE_NAME = 'manual.json';
+
+/** manual.json from the data repo; empty when missing or when the ctx can't read it (admin drill-in). */
+async function loadManualData(ctx) {
+  if (typeof ctx.fetchMyFile !== 'function') return { schema_version: 1, meetings: [] };
+  try {
+    const manualData = await ctx.fetchMyFile(MANUAL_FILE_NAME);
+    return { schema_version: 1, ...manualData, meetings: manualData.meetings || [] };
+  } catch (err) {
+    if (err.code === 'NOT_FOUND') return { schema_version: 1, meetings: [] };
+    throw err;
+  }
+}
+
+/**
+ * Calendar entries = synced Google meetings + every manual meeting. A manual
+ * meeting uses its synced twin (same id, unchanged) for status; one added or
+ * edited since the last laptop sync shows as pending until the next sync.
+ */
+function mergeManualMeetings(calendarData, manualData, timeContext) {
+  const syncedEntryList = calendarData.entries || [];
+  const syncedManualEntryVsIdMap = new Map(syncedEntryList
+    .filter(calendarEntry => calendarEntry.source === 'manual')
+    .map(calendarEntry => [calendarEntry.id, calendarEntry]));
+  const mergedEntryList = syncedEntryList.filter(calendarEntry => calendarEntry.source !== 'manual');
+  for (const manualMeeting of manualData.meetings || []) {
+    const syncedTwin = syncedManualEntryVsIdMap.get(manualMeeting.id);
+    const isSyncedTwinCurrent = syncedTwin && syncedTwin.start === manualMeeting.start &&
+      syncedTwin.end === manualMeeting.end && syncedTwin.title === manualMeeting.title &&
+      syncedTwin.project === manualMeeting.project;
+    mergedEntryList.push({
+      ...(isSyncedTwinCurrent ? syncedTwin : {
+        status: 'pending',
+        reason: 'Added by you — goes into the timesheet at the next sync',
+        response: 'accepted',
+        attendee_count: 0,
+        attendee_domains: [],
+      }),
+      id: manualMeeting.id,
+      source: 'manual',
+      work_date: timeContext.workDateOfInstant(manualMeeting.start),
+      start: manualMeeting.start,
+      end: manualMeeting.end,
+      minutes: Math.round((Date.parse(manualMeeting.end) - Date.parse(manualMeeting.start)) / 60000),
+      title: manualMeeting.title,
+      project: manualMeeting.project,
+      medium: manualMeeting.medium,
+      notes: manualMeeting.notes || null,
+    });
+  }
+  return mergedEntryList.sort((first, second) => first.start.localeCompare(second.start));
 }
 
 function renderLoadError(container, errorObject, isTile) {
@@ -251,9 +347,11 @@ export default {
       renderLoadError(container, err, true);
       return;
     }
-    container.innerHTML = '';
-    const entryList = calendarData.entries || [];
     const timeContext = buildTimeContext(calendarData);
+    let manualData = { meetings: [] };
+    try { manualData = await loadManualData(ctx); } catch (_err) { /* tile still renders synced meetings */ }
+    container.innerHTML = '';
+    const entryList = mergeManualMeetings(calendarData, manualData, timeContext);
     const projectNameVsColorMap = buildProjectColorMap(entryList);
 
     const weekMonday = mondayOf(timeContext.currentWorkDate());
@@ -312,11 +410,27 @@ export default {
       renderLoadError(container, err, false);
       return;
     }
-    container.innerHTML = '';
-
-    const entryList = calendarData.entries || [];
     const timeContext = buildTimeContext(calendarData);
-    const projectNameVsColorMap = buildProjectColorMap(entryList);
+    let manualData;
+    let manualLoadError = null;
+    try {
+      manualData = await loadManualData(ctx);
+    } catch (err) {
+      manualData = { schema_version: 1, meetings: [] };
+      manualLoadError = err;
+    }
+    container.innerHTML = '';
+    if (manualLoadError) {
+      container.appendChild(el('p', { class: 'wt-error' },
+        `Couldn't load meetings you added by hand: ${manualLoadError.message}`));
+    }
+
+    let entryList = mergeManualMeetings(calendarData, manualData, timeContext);
+    let projectNameVsColorMap = buildProjectColorMap(entryList);
+    const canAddMeetings = typeof ctx.saveMyFile === 'function' && !manualLoadError;
+    const projectChoiceList = calendarData.projects?.length
+      ? calendarData.projects
+      : [...new Set(entryList.map(calendarEntry => calendarEntry.project).filter(Boolean)), 'Internal'];
     const todayWorkDate = timeContext.currentWorkDate();
 
     let viewMode = 'week';
@@ -356,12 +470,17 @@ export default {
             class: 'wt-cal-btn wt-cal-btn--text',
             onclick: () => { weekMonday = mondayOf(todayWorkDate); monthFirstDay = firstOfMonth(todayWorkDate); renderAll(); },
           }, 'Today')),
-        el('div', { class: 'wt-cal-toggle', role: 'group', 'aria-label': 'Calendar view' },
-          ...['week', 'month'].map(modeName => el('button', {
-            class: 'wt-cal-toggle__btn' + (viewMode === modeName ? ' is-active' : ''),
-            'aria-pressed': viewMode === modeName ? 'true' : 'false',
-            onclick: () => { viewMode = modeName; renderAll(); },
-          }, modeName === 'week' ? 'Week' : 'Month')))
+        el('div', { class: 'wt-cal-toolbar__actions' },
+          canAddMeetings ? el('button', {
+            class: 'wt-cal-btn wt-cal-btn--primary',
+            onclick: () => openMeetingForm(null),
+          }, '+ Add meeting') : null,
+          el('div', { class: 'wt-cal-toggle', role: 'group', 'aria-label': 'Calendar view' },
+            ...['week', 'month'].map(modeName => el('button', {
+              class: 'wt-cal-toggle__btn' + (viewMode === modeName ? ' is-active' : ''),
+              'aria-pressed': viewMode === modeName ? 'true' : 'false',
+              onclick: () => { viewMode = modeName; renderAll(); },
+            }, modeName === 'week' ? 'Week' : 'Month'))))
       );
     }
 
@@ -391,10 +510,12 @@ export default {
         style: { '--wt-cal-color': projectColor, ...extraStyleMap },
         title: meetingTooltip(calendarEntry, timeContext),
         tabindex: '0',
+        onclick: calendarEntry.source === 'manual' && canAddMeetings ? () => openMeetingForm(calendarEntry) : null,
       },
         el('div', { class: 'wt-cal-event__title' }, calendarEntry.title),
         el('div', { class: 'wt-cal-event__meta' },
           `${timeContext.formatClockRange(calendarEntry.start, calendarEntry.end)}` +
+          (calendarEntry.source === 'manual' ? ` · ${calendarEntry.medium || 'Other'}` : '') +
           (calendarEntry.project ? ` · ${calendarEntry.project}` : ''))
       );
     }
@@ -553,15 +674,140 @@ export default {
                 el('span', { class: 'wt-cal-list__time' },
                   `${timeContext.formatClockRange(calendarEntry.start, calendarEntry.end)}`),
                 el('span', { class: 'wt-cal-list__title' }, calendarEntry.title,
-                  calendarEntry.response === 'tentative' ? el('span', { class: 'wt-cal-list__note' }, ' (tentative)') : null),
+                  calendarEntry.response === 'tentative' ? el('span', { class: 'wt-cal-list__note' }, ' (tentative)') : null,
+                  calendarEntry.source === 'manual'
+                    ? el('span', { class: 'wt-cal-manual-tag' }, `Added by you · ${calendarEntry.medium || 'Other'}`) : null,
+                  calendarEntry.source === 'manual' && canAddMeetings
+                    ? el('button', { class: 'wt-cal-link-btn', onclick: () => openMeetingForm(calendarEntry) }, 'Edit') : null),
                 el('span', { class: 'wt-cal-list__project' },
                   el('span', { class: 'wt-cal-swatch', style: { background: colorOf(calendarEntry, projectNameVsColorMap) } }),
                   calendarEntry.project || 'Unassigned'),
                 el('span', { class: `wt-cal-badge wt-cal-badge--${calendarEntry.status}` },
                   STATUS_LABEL_MAP[calendarEntry.status] || calendarEntry.status),
                 calendarEntry.reason && calendarEntry.status !== 'logged'
-                  ? el('span', { class: 'wt-cal-list__reason' }, calendarEntry.reason) : null)))));
+                  ? el('span', { class: 'wt-cal-list__reason' }, calendarEntry.reason) : null,
+                calendarEntry.source === 'manual' && calendarEntry.notes
+                  ? el('span', { class: 'wt-cal-list__reason' }, `Notes: ${calendarEntry.notes}`) : null)))));
       }
+    }
+
+    /** Add (existingEntry = null) or edit/delete a meeting added by hand. */
+    function openMeetingForm(existingEntry) {
+      const startDefaults = existingEntry
+        ? timeContext.localDateTimeOf(existingEntry.start)
+        : { isoDate: timeContext.todayLocalIsoDate(), hourMinute: '' };
+      const endDefaults = existingEntry ? timeContext.localDateTimeOf(existingEntry.end) : { hourMinute: '' };
+      const lastUsedProject = [...(manualData.meetings || [])].pop()?.project;
+
+      const dateInput = el('input', { type: 'date', required: true, value: startDefaults.isoDate });
+      const startTimeInput = el('input', { type: 'time', required: true, value: startDefaults.hourMinute, step: '300' });
+      const endTimeInput = el('input', { type: 'time', required: true, value: endDefaults.hourMinute, step: '300' });
+      const titleInput = el('input', { type: 'text', required: true, maxlength: '140',
+        placeholder: 'e.g. Huddle with Aviral on rental pricing', value: existingEntry?.title || '' });
+      const projectSelect = el('select', { required: true },
+        ...projectChoiceList.map(projectName => el('option', {
+          value: projectName,
+          selected: projectName === (existingEntry?.project || lastUsedProject || projectChoiceList[0]),
+        }, projectName)));
+      const mediumSelect = el('select', {},
+        ...MEETING_MEDIUM_LIST.map(mediumName => el('option', {
+          value: mediumName, selected: mediumName === (existingEntry?.medium || 'Slack'),
+        }, mediumName)));
+      const notesInput = el('textarea', { rows: '2', maxlength: '500', placeholder: 'Optional' });
+      notesInput.value = existingEntry?.notes || '';
+      const formMessage = el('p', { class: 'wt-cal-form__message', role: 'status' });
+      const saveButton = el('button', { type: 'submit', class: 'wt-cal-btn wt-cal-btn--primary' },
+        existingEntry ? 'Save changes' : 'Add meeting');
+
+      const formField = (labelText, inputNode, hintText) => el('label', { class: 'wt-cal-form__field' },
+        el('span', { class: 'wt-cal-form__label' }, labelText), inputNode,
+        hintText ? el('span', { class: 'wt-cal-form__hint' }, hintText) : null);
+
+      const meetingDialog = el('dialog', { class: 'wt-cal-dialog' });
+      const closeDialog = () => { meetingDialog.close(); meetingDialog.remove(); };
+
+      async function persistMeetings(updatedMeetingList, commitMessage) {
+        saveButton.disabled = true;
+        formMessage.textContent = 'Saving…';
+        formMessage.className = 'wt-cal-form__message';
+        try {
+          const updatedManualData = { schema_version: 1, meetings: updatedMeetingList };
+          await ctx.saveMyFile(MANUAL_FILE_NAME, updatedManualData, commitMessage);
+          manualData = updatedManualData;
+          entryList = mergeManualMeetings(calendarData, manualData, timeContext);
+          projectNameVsColorMap = buildProjectColorMap(entryList);
+          closeDialog();
+          renderAll();
+        } catch (err) {
+          saveButton.disabled = false;
+          formMessage.textContent = `Couldn't save: ${err.message}`;
+          formMessage.className = 'wt-cal-form__message is-error';
+        }
+      }
+
+      const meetingForm = el('form', {
+        class: 'wt-cal-form',
+        onsubmit: (submitEvent) => {
+          submitEvent.preventDefault();
+          const meetingTitle = titleInput.value.trim();
+          if (!meetingTitle) { titleInput.focus(); return; }
+          const startIso = timeContext.zonedToUtcIso(dateInput.value, startTimeInput.value);
+          let endIso = timeContext.zonedToUtcIso(dateInput.value, endTimeInput.value);
+          if (endIso <= startIso) endIso = new Date(Date.parse(endIso) + 86400000).toISOString().replace(/\.\d{3}Z$/, 'Z');
+          if (Date.parse(endIso) - Date.parse(startIso) > 12 * 3600000) {
+            formMessage.textContent = 'That meeting would be over 12 hours — check the start and end times.';
+            formMessage.className = 'wt-cal-form__message is-error';
+            return;
+          }
+          const meetingRecord = {
+            id: existingEntry?.id || `manual-${(crypto.randomUUID?.() || String(Date.now())).slice(0, 13)}`,
+            start: startIso,
+            end: endIso,
+            title: meetingTitle,
+            project: projectSelect.value,
+            medium: mediumSelect.value,
+            notes: notesInput.value.trim() || undefined,
+            created_at: (manualData.meetings || []).find(manualMeeting => manualMeeting.id === existingEntry?.id)?.created_at
+              || new Date().toISOString().replace(/\.\d{3}Z$/, 'Z'),
+          };
+          const otherMeetingList = (manualData.meetings || []).filter(manualMeeting => manualMeeting.id !== meetingRecord.id);
+          persistMeetings([...otherMeetingList, meetingRecord].sort((first, second) => first.start.localeCompare(second.start)),
+            `Calendar: ${existingEntry ? 'edit' : 'add'} meeting "${meetingTitle}"`);
+        },
+      },
+        el('h3', { class: 'wt-cal-form__title' }, existingEntry ? 'Edit meeting' : 'Add a meeting'),
+        el('p', { class: 'wt-cal-form__intro' },
+          'For meetings that aren’t on your Google Calendar — a Slack huddle, a call. ' +
+          'It goes into your timesheet at the next sync.'),
+        formField('Title', titleInput),
+        el('div', { class: 'wt-cal-form__row' },
+          formField('Date', dateInput),
+          formField('Start', startTimeInput),
+          formField('End', endTimeInput, 'Ends after midnight? Just pick the time.')),
+        el('div', { class: 'wt-cal-form__row' },
+          formField('Project', projectSelect),
+          formField('Where', mediumSelect)),
+        formField('Notes', notesInput),
+        el('p', { class: 'wt-cal-form__hint' }, `Times are ${timeContext.timezoneShortLabel} (${timeContext.timezoneName}).`),
+        formMessage,
+        el('div', { class: 'wt-cal-form__actions' },
+          existingEntry ? el('button', {
+            type: 'button', class: 'wt-cal-btn wt-cal-btn--danger',
+            onclick: () => {
+              if (!confirm(`Delete "${existingEntry.title}"?`)) return;
+              persistMeetings((manualData.meetings || []).filter(manualMeeting => manualMeeting.id !== existingEntry.id),
+                `Calendar: delete meeting "${existingEntry.title}"`);
+            },
+          }, 'Delete') : null,
+          el('span', { class: 'wt-cal-form__spacer' }),
+          el('button', { type: 'button', class: 'wt-cal-btn wt-cal-btn--text', onclick: closeDialog }, 'Cancel'),
+          saveButton));
+
+      meetingDialog.addEventListener('cancel', () => meetingDialog.remove());
+      meetingDialog.appendChild(meetingForm);
+      document.body.appendChild(meetingDialog);
+      meetingDialog.showModal();
+      (existingEntry ? titleInput : startTimeInput).focus();
     }
 
     function renderAll() {
@@ -569,11 +815,13 @@ export default {
       const periodEntryList = viewMode === 'week' ? renderWeek() : renderMonth();
       renderSummary(periodEntryList);
       renderList(periodEntryList);
+      syncFootnote.textContent =
+        `${entryList.length} meetings tracked since ${calendarData.range?.start_date || '—'} · ` +
+        `last synced ${calendarData.last_synced_at?.slice(0, 16).replace('T', ' ') || '—'} UTC`;
     }
 
+    const syncFootnote = el('p', { class: 'wt-cal-footnote' });
+    container.appendChild(syncFootnote);
     renderAll();
-    container.appendChild(el('p', { class: 'wt-cal-footnote' },
-      `${entryList.length} meetings tracked since ${calendarData.range?.start_date || '—'} · ` +
-      `last synced ${calendarData.last_synced_at?.slice(0, 16).replace('T', ' ') || '—'} UTC`));
   },
 };

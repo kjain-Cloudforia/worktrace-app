@@ -281,6 +281,85 @@
 .wt-cal-badge--excluded,
 .wt-cal-badge--missing  { background: #ece8e1; color: var(--wt-fg-muted); }
 
+/* ---- Add / edit a meeting by hand -------------------------- */
+.wt-cal-toolbar__actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.wt-cal-btn--primary {
+  background: var(--wt-accent);
+  border-color: var(--wt-accent);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 0 14px;
+}
+.wt-cal-btn--primary:hover { filter: brightness(0.95); color: #fff; }
+.wt-cal-btn--primary[disabled] { opacity: .6; cursor: progress; }
+.wt-cal-btn--danger { font-size: 13px; color: var(--wt-danger); }
+.wt-cal-btn--danger:hover { border-color: var(--wt-danger); color: var(--wt-danger); }
+.wt-cal-event[onclick], .wt-cal-status--manual { cursor: pointer; }
+.wt-cal-manual-tag {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: #eef1f6;
+  color: #4a5a70;
+  font-size: 10px;
+  font-weight: 600;
+  vertical-align: 1px;
+}
+.wt-cal-link-btn {
+  margin-left: 6px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--wt-accent);
+  font: inherit;
+  font-size: 12px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.wt-cal-dialog {
+  width: min(520px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  border: 1px solid var(--wt-tile-border);
+  border-radius: var(--wt-radius);
+  background: var(--wt-tile-bg);
+  color: var(--wt-fg);
+  box-shadow: 0 12px 40px rgba(0,0,0,.18);
+}
+.wt-cal-dialog::backdrop { background: rgba(42,42,46,.35); }
+.wt-cal-form { display: flex; flex-direction: column; gap: 12px; padding: 20px; }
+.wt-cal-form__title { margin: 0; font-size: 17px; }
+.wt-cal-form__intro { margin: -4px 0 4px; font-size: 13px; color: var(--wt-fg-muted); line-height: 1.45; }
+.wt-cal-form__row { display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 12px; }
+.wt-cal-form__field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.wt-cal-form__label { font-size: 12px; font-weight: 600; }
+.wt-cal-form__hint { font-size: 11px; color: var(--wt-fg-muted); }
+.wt-cal-form input,
+.wt-cal-form select,
+.wt-cal-form textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 36px;
+  padding: 6px 10px;
+  border: 1px solid var(--wt-tile-border);
+  border-radius: 8px;
+  background: var(--wt-bg);
+  color: var(--wt-fg);
+  font: inherit;
+  font-size: 14px;
+}
+.wt-cal-form input:focus,
+.wt-cal-form select:focus,
+.wt-cal-form textarea:focus { outline: 2px solid var(--wt-accent-soft); border-color: var(--wt-accent); }
+.wt-cal-form textarea { resize: vertical; }
+.wt-cal-form__message { margin: 0; font-size: 12px; color: var(--wt-fg-muted); min-height: 1em; }
+.wt-cal-form__message.is-error { color: var(--wt-danger); }
+.wt-cal-form__actions { display: flex; align-items: center; gap: 8px; }
+.wt-cal-form__spacer { flex: 1; }
+
 .wt-cal-footnote { font-size: 11px; color: var(--wt-fg-muted); margin: 8px 0 0; }
 
 @media (max-width: 640px) {
