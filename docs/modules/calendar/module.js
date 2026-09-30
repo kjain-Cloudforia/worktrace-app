@@ -693,10 +693,13 @@ export default {
 
     /** Add (existingEntry = null) or edit/delete a meeting added by hand. */
     function openMeetingForm(existingEntry) {
-      const startDefaults = existingEntry
-        ? timeContext.localDateTimeOf(existingEntry.start)
-        : { isoDate: timeContext.todayLocalIsoDate(), hourMinute: '' };
-      const endDefaults = existingEntry ? timeContext.localDateTimeOf(existingEntry.end) : { hourMinute: '' };
+      // New meeting: end = now rounded to the nearest 30 min, start = 1 hour before
+      // (date follows the start, so a 12:30 AM end pre-fills yesterday 11:30 PM).
+      const halfHourMillis = 30 * 60000;
+      const defaultEndMillis = Math.round(Date.now() / halfHourMillis) * halfHourMillis;
+      const defaultStartIso = new Date(defaultEndMillis - 2 * halfHourMillis).toISOString();
+      const startDefaults = timeContext.localDateTimeOf(existingEntry ? existingEntry.start : defaultStartIso);
+      const endDefaults = timeContext.localDateTimeOf(existingEntry ? existingEntry.end : new Date(defaultEndMillis).toISOString());
       const lastUsedProject = [...(manualData.meetings || [])].pop()?.project;
 
       const dateInput = el('input', { type: 'date', required: true, value: startDefaults.isoDate });
@@ -807,7 +810,7 @@ export default {
       meetingDialog.appendChild(meetingForm);
       document.body.appendChild(meetingDialog);
       meetingDialog.showModal();
-      (existingEntry ? titleInput : startTimeInput).focus();
+      titleInput.focus();
     }
 
     function renderAll() {
