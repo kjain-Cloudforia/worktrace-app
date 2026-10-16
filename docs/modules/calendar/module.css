@@ -183,6 +183,26 @@
   background-repeat: repeat-y;
 }
 .wt-cal-week__day.is-today { background-color: color-mix(in srgb, var(--wt-accent-soft) 45%, transparent); }
+/* Leave day (timesheet "*On leave.*"): hatched column + a small tag. */
+.wt-cal-week__day.is-leave,
+.wt-cal-month__cell.is-leave {
+  background-color: color-mix(in srgb, var(--wt-fg-muted) 8%, transparent);
+  background-image:
+    linear-gradient(to bottom, var(--wt-tile-border) 1px, transparent 1px),
+    repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--wt-fg-muted) 10%, transparent) 8px 9px);
+}
+.wt-cal-month__cell.is-leave { background-image: repeating-linear-gradient(135deg, transparent 0 8px, color-mix(in srgb, var(--wt-fg-muted) 10%, transparent) 8px 9px); }
+.wt-cal-leave-tag {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--wt-fg-muted);
+  background: var(--wt-tile-bg);
+  border: 1px solid var(--wt-tile-border);
+  border-radius: 999px;
+  padding: 0 6px;
+  margin-top: 2px;
+  white-space: nowrap;
+}
 .wt-cal-event {
   position: absolute;
   box-sizing: border-box;

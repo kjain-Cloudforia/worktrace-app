@@ -432,6 +432,8 @@ export default {
       ? calendarData.projects
       : [...new Set(entryList.map(calendarEntry => calendarEntry.project).filter(Boolean)), 'Internal'];
     const todayWorkDate = timeContext.currentWorkDate();
+    // Work days marked "*On leave.*" in the timesheet (from data.json).
+    const leaveWorkDateSet = new Set(calendarData.leave_dates || []);
 
     let viewMode = 'week';
     let weekMonday = mondayOf(todayWorkDate);
@@ -578,11 +580,13 @@ export default {
           class: 'wt-cal-week__day-head' + (workDate === todayWorkDate ? ' is-today' : ''),
         },
           el('span', { class: 'wt-cal-week__weekday' }, formatShortDate(workDate, { weekday: 'short' })),
-          el('span', { class: 'wt-cal-week__daynum' }, formatShortDate(workDate, { day: 'numeric' })))));
+          el('span', { class: 'wt-cal-week__daynum' }, formatShortDate(workDate, { day: 'numeric' })),
+          leaveWorkDateSet.has(workDate) ? el('span', { class: 'wt-cal-leave-tag' }, 'On leave') : null)));
 
       const dayColumnList = weekDateList.map(workDate => {
         const dayColumn = el('div', {
-          class: 'wt-cal-week__day' + (workDate === todayWorkDate ? ' is-today' : ''),
+          class: 'wt-cal-week__day' + (workDate === todayWorkDate ? ' is-today' : '')
+            + (leaveWorkDateSet.has(workDate) ? ' is-leave' : ''),
           style: {
             height: `${gridHeightPixels}px`,
             backgroundSize: `100% ${60 * pixelsPerMinute}px`,
@@ -631,10 +635,12 @@ export default {
           .filter(calendarEntry => calendarEntry.status === 'logged')
           .reduce((sum, calendarEntry) => sum + calendarEntry.minutes, 0);
         monthGrid.appendChild(el('div', {
-          class: 'wt-cal-month__cell' + (isInMonth ? '' : ' is-outside') + (workDate === todayWorkDate ? ' is-today' : ''),
+          class: 'wt-cal-month__cell' + (isInMonth ? '' : ' is-outside') + (workDate === todayWorkDate ? ' is-today' : '')
+            + (isInMonth && leaveWorkDateSet.has(workDate) ? ' is-leave' : ''),
         },
           el('div', { class: 'wt-cal-month__cell-head' },
             el('span', { class: 'wt-cal-month__daynum' }, String(Number(workDate.slice(8)))),
+            isInMonth && leaveWorkDateSet.has(workDate) ? el('span', { class: 'wt-cal-leave-tag' }, 'On leave') : null,
             dayLoggedMinutes ? el('span', { class: 'wt-cal-month__day-total' }, formatMinutes(dayLoggedMinutes)) : null),
           ...dayEntryList.map(calendarEntry => el('div', {
             class: `wt-cal-month__chip ${statusClassOf(calendarEntry)}`,

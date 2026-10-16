@@ -268,7 +268,7 @@ export default {
       // No-work weekday: a clean muted row, no empty project label / bullets.
       if (entry.no_work) {
         return el('div', { class: 'wt-ts-entry wt-ts-entry--no-work' },
-          el('div', { class: 'wt-ts-entry__no-work' }, 'No work done.')
+          el('div', { class: 'wt-ts-entry__no-work' }, entry.on_leave ? 'On leave.' : 'No work done.')
         );
       }
       return el('div', { class: 'wt-ts-entry' },
