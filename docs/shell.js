@@ -1246,8 +1246,14 @@ function renderHeader() {
 // Module lifecycle
 // ============================================================
 
+// One cache-buster per page load: GitHub Pages serves max-age=600 and the
+// module URLs never change, so a plain refresh could keep running an old
+// module for up to 10 min after a release. A fresh token per load means a
+// refresh always picks up the latest module.js / module.css.
+const MODULE_ASSET_VERSION = Date.now().toString(36);
+
 async function loadModule(moduleEntry) {
-  const moduleUrl = `./modules/${moduleEntry.id}/module.js`;
+  const moduleUrl = `./modules/${moduleEntry.id}/module.js?v=${MODULE_ASSET_VERSION}`;
   const mod = await import(moduleUrl);
   const def = mod.default;
   if (!def || def.id !== moduleEntry.id) {
@@ -1270,7 +1276,7 @@ async function loadModule(moduleEntry) {
       const link = document.createElement('link');
       link.id = cssId;
       link.rel = 'stylesheet';
-      link.href = `./modules/${moduleEntry.id}/${def.stylesheet}`;
+      link.href = `./modules/${moduleEntry.id}/${def.stylesheet}?v=${MODULE_ASSET_VERSION}`;
       document.head.appendChild(link);
     }
   }
