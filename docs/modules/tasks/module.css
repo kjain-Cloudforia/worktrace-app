@@ -149,8 +149,8 @@
   align-items: flex-start;
 }
 .wt-tb-column {
-  flex: 1 0 240px;
-  max-width: 340px;
+  flex: 1 0 230px;
+  max-width: 320px;
   background: var(--wt-bg);
   border: 1px solid var(--wt-tile-border);
   border-radius: 10px;
