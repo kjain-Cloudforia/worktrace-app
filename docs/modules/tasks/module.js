@@ -44,6 +44,7 @@ const ICON_GEAR = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" st
 const ICON_TRASH = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>`;
 
 const SELECTED_BOARD_STORAGE_KEY = 'wt-tasks:selected-board';
+const EXPANDED_DONE_STORAGE_KEY = 'wt-tasks:expanded-done-columns';
 
 // ---- id + key helpers ----
 
@@ -411,6 +412,23 @@ export default {
     let composerColumnId = null;      // column whose "add task" box is open
     let draggedTaskId = null;
 
+    // Done columns grow forever, so they start collapsed to a thin strip.
+    // Expanded ones ("<boardId>:<columnId>") are remembered per browser;
+    // an expanded Done column shows the most recent DONE_PREVIEW_COUNT
+    // finishes until "Show all" is clicked (not remembered).
+    const DONE_PREVIEW_COUNT = 10;
+    let expandedDoneColumnKeySet = new Set();
+    try {
+      expandedDoneColumnKeySet = new Set(JSON.parse(localStorage.getItem(EXPANDED_DONE_STORAGE_KEY) || '[]'));
+    } catch { /* private mode / bad JSON — start collapsed */ }
+    const showAllDoneColumnKeySet = new Set();
+    function toggleDoneColumn(doneColumnKey) {
+      if (expandedDoneColumnKeySet.has(doneColumnKey)) expandedDoneColumnKeySet.delete(doneColumnKey);
+      else expandedDoneColumnKeySet.add(doneColumnKey);
+      try { localStorage.setItem(EXPANDED_DONE_STORAGE_KEY, JSON.stringify([...expandedDoneColumnKeySet])); } catch { /* ignore */ }
+      renderColumns(currentBoard());
+    }
+
     // ---- modals ----
     function openNewBoardModal() {
       const takenKeySet = new Set(dataModel.boards.map(board => board.key));
@@ -706,6 +724,37 @@ export default {
           el('button', { class: 'wt-tb-btn wt-tb-btn--ghost wt-tb-btn--small', onclick: closeComposer }, 'Cancel')));
     }
 
+    // Thin vertical strip for a collapsed Done column: click to expand, and
+    // still a drop target (dropping a card here marks it done).
+    function renderCollapsedDoneColumn(board, column, taskCount, doneColumnKey) {
+      const stripEl = el('button', {
+        class: 'wt-tb-column wt-tb-column--done wt-tb-column--collapsed',
+        title: `Show ${column.name} (${taskCount})`,
+        'aria-label': `Expand ${column.name}, ${taskCount} tasks`,
+        onclick: () => toggleDoneColumn(doneColumnKey),
+      },
+        el('span', { class: 'wt-tb-column__count' }, String(taskCount)),
+        el('span', { class: 'wt-tb-column__name wt-tb-column__name--vertical' }, column.name),
+        el('span', { class: 'wt-tb-collapsed__chevron' }, '›'));
+      stripEl.addEventListener('dragover', (e) => {
+        if (!draggedTaskId) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'move';
+        stripEl.classList.add('wt-tb-column--over');
+      });
+      stripEl.addEventListener('dragleave', () => stripEl.classList.remove('wt-tb-column--over'));
+      stripEl.addEventListener('drop', (e) => {
+        if (!draggedTaskId) return;
+        e.preventDefault();
+        const movedTask = findTask(board, draggedTaskId);
+        draggedTaskId = null;
+        stripEl.classList.remove('wt-tb-column--over');
+        if (!movedTask || movedTask.column_id === column.id) return;
+        persist(mutations.moveTask(board.id, movedTask.id, column.id, null), `Move ${movedTask.key} to ${column.name}`);
+      });
+      return stripEl;
+    }
+
     function renderColumns(board) {
       columnsEl.innerHTML = '';
       if (!board) {
@@ -716,11 +765,41 @@ export default {
       }
       for (const column of board.columns) {
         const columnTaskList = board.tasks.filter(task => task.column_id === column.id);
-        const cardListEl = el('div', { class: 'wt-tb-cardlist' }, ...columnTaskList.map(task => renderCard(board, task)));
+        const doneColumnKey = `${board.id}:${column.id}`;
+
+        if (column.is_done && !expandedDoneColumnKeySet.has(doneColumnKey)) {
+          columnsEl.appendChild(renderCollapsedDoneColumn(board, column, columnTaskList.length, doneColumnKey));
+          continue;
+        }
+
+        // Done columns list newest finishes first and cap at DONE_PREVIEW_COUNT.
+        let shownTaskList = columnTaskList;
+        let hiddenTaskCount = 0;
+        if (column.is_done) {
+          shownTaskList = [...columnTaskList].sort((firstTask, secondTask) =>
+            (secondTask.completed_at || '').localeCompare(firstTask.completed_at || ''));
+          if (!showAllDoneColumnKeySet.has(doneColumnKey) && shownTaskList.length > DONE_PREVIEW_COUNT) {
+            hiddenTaskCount = shownTaskList.length - DONE_PREVIEW_COUNT;
+            shownTaskList = shownTaskList.slice(0, DONE_PREVIEW_COUNT);
+          }
+        }
+
+        const cardListEl = el('div', { class: 'wt-tb-cardlist' }, ...shownTaskList.map(task => renderCard(board, task)));
+        if (hiddenTaskCount) {
+          cardListEl.appendChild(el('button', {
+            class: 'wt-tb-showmore',
+            onclick: () => { showAllDoneColumnKeySet.add(doneColumnKey); renderColumns(board); },
+          }, `Show all (${hiddenTaskCount} older)`));
+        }
         const columnEl = el('div', { class: 'wt-tb-column' + (column.is_done ? ' wt-tb-column--done' : '') },
           el('div', { class: 'wt-tb-column__head' },
             el('span', { class: 'wt-tb-column__name' }, column.name),
-            el('span', { class: 'wt-tb-column__count' }, String(columnTaskList.length))),
+            el('span', { class: 'wt-tb-column__headright' },
+              el('span', { class: 'wt-tb-column__count' }, String(columnTaskList.length)),
+              column.is_done ? el('button', {
+                class: 'wt-tb-iconbtn wt-tb-collapsebtn', title: 'Collapse', 'aria-label': `Collapse ${column.name}`,
+                onclick: () => toggleDoneColumn(doneColumnKey),
+              }, '‹') : null)),
           cardListEl,
           composerColumnId === column.id
             ? renderComposer(board, column)
@@ -747,7 +826,7 @@ export default {
           if (!draggedTaskId) return;
           e.preventDefault();
           const movedTaskId = draggedTaskId;
-          const beforeCardEl = cardAfterPointer(cardListEl, e.clientY);
+          const beforeCardEl = column.is_done ? null : cardAfterPointer(cardListEl, e.clientY);
           const beforeTaskId = beforeCardEl ? beforeCardEl.dataset.taskId : null;
           draggedTaskId = null;
           clearDropMarkers();
