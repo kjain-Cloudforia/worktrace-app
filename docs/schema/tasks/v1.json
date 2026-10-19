@@ -1,0 +1,66 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/kjain-Cloudforia/worktrace-data/schema/tasks/v1.json",
+  "title": "WorkTrace Task Board module — v1",
+  "description": "Per-user Jira-style task boards, one per project. One file per user at modules/tasks/data.json in the user's private data repo. TWO writers: the dashboard (ctx.saveMyData) and the laptop's scripts/wt_tasks.py (GitHub contents API, used by Claude). Both re-read the file right before writing and re-apply their edit, so neither clobbers the other. Task order inside a column = order in the board's `tasks` array.",
+  "type": "object",
+  "required": ["schema_version", "user_id", "boards"],
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": { "const": 1 },
+    "user_id": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+    "display_name": { "type": "string" },
+    "updated_at": { "type": "string", "format": "date-time" },
+    "boards": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name", "key", "columns", "tasks", "next_task_number"],
+        "additionalProperties": false,
+        "properties": {
+          "id": { "type": "string", "description": "Stable board id, e.g. 'brd_ab12cd34'." },
+          "name": { "type": "string", "minLength": 1, "maxLength": 80 },
+          "key": { "type": "string", "pattern": "^[A-Z][A-Z0-9]{1,5}$", "description": "Task-key prefix (GEN → GEN-1). Fixed after creation." },
+          "project": { "type": ["string", "null"], "description": "Friendly project name from config.json project_detection when the board was auto-seeded; null for hand-made boards." },
+          "source": { "type": "string", "enum": ["auto", "manual"] },
+          "archived": { "type": "boolean" },
+          "created_at": { "type": "string", "format": "date-time" },
+          "next_task_number": { "type": "integer", "minimum": 1 },
+          "columns": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": ["id", "name"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string" },
+                "name": { "type": "string", "minLength": 1 },
+                "is_done": { "type": "boolean", "description": "Tasks in this column count as finished." }
+              }
+            }
+          },
+          "tasks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["id", "key", "title", "column_id"],
+              "additionalProperties": false,
+              "properties": {
+                "id": { "type": "string", "description": "Stable task id, e.g. 'tsk_9f3a11c0'." },
+                "key": { "type": "string", "description": "Human key, e.g. 'GEN-12'. Re-issued if the task moves to another board." },
+                "title": { "type": "string", "minLength": 1 },
+                "description": { "type": "string" },
+                "column_id": { "type": "string" },
+                "created_at": { "type": "string", "format": "date-time" },
+                "updated_at": { "type": "string", "format": "date-time" },
+                "completed_at": { "type": "string", "format": "date-time", "description": "Set when the task enters an is_done column; removed when it leaves." },
+                "created_by": { "type": "string", "enum": ["dashboard", "claude"] }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
