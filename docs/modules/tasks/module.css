@@ -288,3 +288,33 @@
 .wt-modal__field label.wt-tb-coleditor__done { display: inline-flex; margin: 0; font-weight: 400; }
 .wt-modal__field .wt-tb-coleditor input[type="text"] { padding: 7px 10px; font-family: inherit; font-size: 13px; }
 .wt-modal__field .wt-tb-prose { font-family: inherit; font-size: 14px; }
+
+/* ---- Collapsible Done columns ------------------------------- */
+.wt-tb-column--collapsed {
+  flex: 0 0 44px;
+  min-width: 44px;
+  max-width: 44px;
+  align-items: center;
+  padding: 10px 0;
+  gap: 10px;
+  cursor: pointer;
+  font-family: inherit;
+  align-self: stretch;
+  min-height: 160px;
+}
+.wt-tb-column--collapsed:hover { border-color: var(--wt-accent); }
+.wt-tb-column__name--vertical { writing-mode: vertical-rl; white-space: nowrap; }
+.wt-tb-collapsed__chevron { color: var(--wt-fg-muted); font-size: 16px; line-height: 1; }
+.wt-tb-column__headright { display: inline-flex; align-items: center; gap: 2px; }
+.wt-tb-collapsebtn { min-width: 22px; padding: 0 4px; font-size: 16px; }
+.wt-tb-showmore {
+  font-family: inherit;
+  font-size: 12px;
+  color: var(--wt-fg-muted);
+  background: none;
+  border: 1px dashed var(--wt-tile-border);
+  border-radius: 8px;
+  padding: 6px;
+  cursor: pointer;
+}
+.wt-tb-showmore:hover { color: var(--wt-accent); border-color: var(--wt-accent); }
