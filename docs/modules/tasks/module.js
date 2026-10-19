@@ -73,8 +73,12 @@ function suggestBoardKey(boardName, takenKeySet) {
 function defaultColumnList() {
   return [
     { id: 'col_todo', name: 'To Do' },
-    { id: 'col_inprogress', name: 'In Progress' },
-    { id: 'col_blocked', name: 'Blocked' },
+    { id: 'col_dev', name: 'Dev In Progress' },
+    { id: 'col_qa', name: 'QA In Progress' },
+    { id: 'col_waiting', name: 'Waiting for Client' },
+    { id: 'col_ready', name: 'Ready to Deploy' },
+    { id: 'col_prod', name: 'Prod Deployed' },
+    { id: 'col_prodtest', name: 'Prod Testing' },
     { id: 'col_done', name: 'Done', is_done: true },
   ];
 }
@@ -445,7 +449,7 @@ export default {
         el('div', { class: 'wt-modal__field' }, el('label', {}, 'Board name'), nameInput),
         el('div', { class: 'wt-modal__field' }, el('label', {}, 'Key'), keyInput,
           el('p', { class: 'wt-modal__hint' }, 'Prefix for task keys, e.g. GEN → GEN-1, GEN-2. Can\'t be changed later.')),
-        el('p', { class: 'wt-modal__hint' }, 'Starts with To Do / In Progress / Blocked / Done — edit columns any time in board settings.'),
+        el('p', { class: 'wt-modal__hint' }, 'Starts with To Do → Dev → QA → Waiting for Client → Ready to Deploy → Prod Deployed → Prod Testing → Done — edit columns any time in board settings.'),
         errBox,
         el('div', { class: 'wt-modal__actions' }, cancel, submit),
       ]);
