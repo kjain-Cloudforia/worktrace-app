@@ -206,17 +206,22 @@ function hide(sel) { $(sel).hidden = true; }
  * Fetch a JSON file from the current user's data_repo using their decrypted PAT.
  * The path is repo-relative (e.g. 'modules/timesheet/data.json').
  */
-async function ghFetchFromCurrentRepo(path) {
+async function ghFetchFromCurrentRepo(path, { fresh = false } = {}) {
   if (!SHELL_STATE.currentUser?.data_repo) {
     throw new Error('No data repo configured for the current user.');
   }
   if (!SHELL_STATE.pat) throw new Error('Not signed in.');
-  const url = `${GITHUB_API}/repos/${SHELL_STATE.currentUser.data_repo}/contents/${path}?ref=main`;
+  // `fresh` bypasses GitHub's max-age=60 on authed reads (cache: no-store +
+  // a buster) — needed by modules that re-read right before a write so they
+  // merge onto what another writer (e.g. a laptop script) just committed.
+  const cacheBuster = fresh ? `&_=${Date.now()}` : '';
+  const url = `${GITHUB_API}/repos/${SHELL_STATE.currentUser.data_repo}/contents/${path}?ref=main${cacheBuster}`;
   const res = await fetch(url, {
     headers: {
       'Authorization': `Bearer ${SHELL_STATE.pat}`,
       'Accept': 'application/vnd.github.raw',
     },
+    cache: fresh ? 'no-store' : 'default',
   });
   if (res.status === 401 || res.status === 403) {
     throw new Error('Your session expired or the token is no longer valid. Please sign in again.');
@@ -1284,10 +1289,13 @@ async function loadModule(moduleEntry) {
   // Shell services exposed to modules
   const shellApi = {
     get currentUser() { return SHELL_STATE.currentUser; },
-    /** Fetch the current user's data file for this module. */
-    async fetchMyData() {
+    /**
+     * Fetch the current user's data file for this module. Pass
+     * { fresh: true } to skip the browser/GitHub cache (read-before-write).
+     */
+    async fetchMyData(fetchOptions = {}) {
       const dataPath = def.dataPath || `modules/${def.id}/data.json`;
-      return ghFetchFromCurrentRepo(dataPath);
+      return ghFetchFromCurrentRepo(dataPath, fetchOptions);
     },
     /**
      * Persist this module's data file back into the current user's data

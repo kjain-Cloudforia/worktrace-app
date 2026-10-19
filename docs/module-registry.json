@@ -15,6 +15,12 @@
       "enabled": true
     },
     {
+      "id": "tasks",
+      "displayName": "Task Board",
+      "description": "Project boards \u00b7 drag tasks across statuses",
+      "enabled": true
+    },
+    {
       "id": "tabgroups",
       "displayName": "Tab Vault",
       "description": "Park tab groups \u00b7 free RAM",
