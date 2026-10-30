@@ -274,8 +274,15 @@ async function ghFetchFromRepo(ownerRepo, path) {
  * content instead of the `{content: base64, ...}` envelope.
  *
  * Returns the encrypted user record JSON, or throws on 404 / parse error.
+ *
+ * `allowCdnFallback` (sign-in reads only): anonymous Contents API calls are
+ * capped at 60/hour per network, and once that's used up GitHub answers
+ * 403/429. In that case only, fall back to the raw CDN. A copy up to ~5
+ * minutes old is fine for signing in. Never pass this from a caller that
+ * writes the record back (password change, shift edit, recovery): those
+ * must read the latest copy.
  */
-async function fetchAuthRecord(username) {
+async function fetchAuthRecord(username, { allowCdnFallback = false } = {}) {
   const buster = `?_=${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
   const url = `${AUTH_API}/users/${encodeURIComponent(username)}.json${buster}`;
   const res = await fetch(url, {
@@ -287,8 +294,30 @@ async function fetchAuthRecord(username) {
     err.code = 'USER_NOT_FOUND';
     throw err;
   }
+  const isRateLimited = res.status === 403 || res.status === 429;
+  if (isRateLimited && allowCdnFallback) {
+    return fetchAuthRecordFromCdn(username);
+  }
   if (!res.ok) throw new Error(`Failed to fetch auth record: HTTP ${res.status}`);
   return res.json();
+}
+
+// Raw CDN copy of the same public file. No hourly API limit, but cached by
+// path for up to ~5 minutes, so it's a backup for sign-in only.
+const AUTH_RAW_CDN = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main';
+
+async function fetchAuthRecordFromCdn(username) {
+  const cdnUrl = `${AUTH_RAW_CDN}/users/${encodeURIComponent(username)}.json`;
+  const cdnResponse = await fetch(cdnUrl, { cache: 'no-store' });
+  if (cdnResponse.status === 404) {
+    const err = new Error('No such user.');
+    err.code = 'USER_NOT_FOUND';
+    throw err;
+  }
+  if (!cdnResponse.ok) {
+    throw new Error(`Failed to fetch auth record: GitHub rate limit reached and backup returned HTTP ${cdnResponse.status}`);
+  }
+  return cdnResponse.json();
 }
 
 /**
@@ -304,7 +333,7 @@ async function signInWithCredentials(username, password) {
   if (!username) throw new Error('Enter your username.');
   if (!password) throw new Error('Enter your password.');
 
-  const record = await fetchAuthRecord(username);
+  const record = await fetchAuthRecord(username, { allowCdnFallback: true });
   let pat, publicFields;
   try {
     const unlocked = await unlockUserRecord(record, password);
@@ -361,7 +390,7 @@ async function trySessionResume() {
   try {
     // Re-fetch the auth file's public fields (so display_name etc. stay
     // current if admin updated the record between tabs).
-    const record = await fetchAuthRecord(username);
+    const record = await fetchAuthRecord(username, { allowCdnFallback: true });
     const { kdf, iterations, salt, iv, ciphertext, ...publicFields } = record;
     SHELL_STATE.currentUser = publicFields;
     SHELL_STATE.pat = pat;
