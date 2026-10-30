@@ -14,6 +14,8 @@
 
 const GITHUB_API = 'https://api.github.com';
 const AUTH_API = 'https://api.github.com/repos/kjain-Cloudforia/worktrace-auth/contents';
+// Backup for sign-in only, when the anonymous API limit is used up.
+const AUTH_RAW_CDN = 'https://raw.githubusercontent.com/kjain-Cloudforia/worktrace-auth/main';
 
 // UTF-8-safe string → base64 (GitHub wants base64 content). Mirrors
 // shell.js strToBase64; `unescape` is deprecated but is the standard
@@ -36,6 +38,22 @@ export async function fetchAuthRecord(username) {
     const err = new Error('No such user.');
     err.code = 'USER_NOT_FOUND';
     throw err;
+  }
+  // Anonymous Contents API calls are capped at 60/hour per network. When
+  // that's used up (403/429), read the raw CDN copy instead. It can be up
+  // to ~5 minutes old, which is fine for signing in (this is only used there).
+  if (res.status === 403 || res.status === 429) {
+    const cdnUrl = `${AUTH_RAW_CDN}/users/${encodeURIComponent(username)}.json`;
+    const cdnResponse = await fetch(cdnUrl, { cache: 'no-store' });
+    if (cdnResponse.status === 404) {
+      const err = new Error('No such user.');
+      err.code = 'USER_NOT_FOUND';
+      throw err;
+    }
+    if (!cdnResponse.ok) {
+      throw new Error(`Failed to fetch auth record: GitHub rate limit reached and backup returned HTTP ${cdnResponse.status}`);
+    }
+    return cdnResponse.json();
   }
   if (!res.ok) throw new Error(`Failed to fetch auth record: HTTP ${res.status}`);
   return res.json();
